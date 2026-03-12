@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models.charging_session import EVChargingSession
 from db.models.reference import EVChargerStall, EVLocationLookup
 from web.dependencies import get_db
+from web.queries.battery import build_mini_charge_curve
 from web.queries.costs import compute_session_cost, get_locations_by_id, get_session_cost_context
 from web.queries.sessions import get_most_recent_location, query_sessions
 from web.queries.settings import get_all_networks, get_app_setting, get_stalls_for_location, get_subscriptions_for_network, resolve_network
@@ -441,6 +442,7 @@ async def create_session(
     user_tz = await get_app_setting(db, "user_timezone", "UTC")
 
     vehicles = await get_all_vehicles(db)
+    mini_chart_html = build_mini_charge_curve(new_session)
     context = {
         "session": new_session,
         "cost_info": cost_info,
@@ -450,6 +452,7 @@ async def create_session(
         "networks": all_networks,
         "user_tz": user_tz,
         "vehicles": vehicles,
+        "mini_chart_html": mini_chart_html,
     }
     response = templates.TemplateResponse(request, "sessions/partials/drawer.html", context)
     response.headers["HX-Trigger"] = json.dumps({
@@ -675,6 +678,7 @@ async def update_session(
     cost_info = compute_session_cost(session, network=network_obj, location=location_obj, subscription_periods=sub_periods)
     user_tz = await get_app_setting(db, "user_timezone", "UTC")
     vehicles = await get_all_vehicles(db)
+    mini_chart_html = build_mini_charge_curve(session)
 
     context = {
         "session": session,
@@ -685,6 +689,7 @@ async def update_session(
         "networks": all_networks,
         "user_tz": user_tz,
         "vehicles": vehicles,
+        "mini_chart_html": mini_chart_html,
     }
     response = templates.TemplateResponse(request, "sessions/partials/drawer.html", context)
     response.headers["HX-Trigger"] = json.dumps({
@@ -753,6 +758,8 @@ async def session_detail(
 
     user_tz = await get_app_setting(db, "user_timezone", "UTC")
 
+    mini_chart_html = build_mini_charge_curve(session)
+
     context = {
         "session": session,
         "cost_info": cost_info,
@@ -763,6 +770,7 @@ async def session_detail(
         "stall_label": stall_label,
         "user_tz": user_tz,
         "vehicles": vehicles,
+        "mini_chart_html": mini_chart_html,
     }
     return templates.TemplateResponse(request, "sessions/partials/drawer.html", context)
 

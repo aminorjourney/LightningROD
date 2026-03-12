@@ -75,9 +75,9 @@
 
                     <div class="divider my-1 px-2"></div>
 
-                    <!-- Battery section (placeholder) -->
+                    <!-- Battery section -->
                     <li>
-                        <details>
+                        <details {{ 'open' if active_page == 'battery' }}>
                             <summary>
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h14a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1zm16 3h1" />
@@ -85,7 +85,7 @@
                                 Battery
                             </summary>
                             <ul>
-                                <li class="disabled"><span class="text-base-content/40 text-sm">Coming soon</span></li>
+                                <li><a href="/battery" class="{{ 'active' if active_page == 'battery' }}">Analytics</a></li>
                             </ul>
                         </details>
                     </li>

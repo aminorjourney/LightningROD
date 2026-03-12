@@ -454,6 +454,19 @@
         </dl>
     </div>
 
+    <!-- Battery Charge Curve -->
+    {% if mini_chart_html %}
+    <div>
+        <h3 class="text-xs uppercase tracking-wide text-base-content/50 pb-2 mb-3 border-b border-base-300">Charge Curve</h3>
+        {% include "battery/partials/mini_charge_curve.html" %}
+    </div>
+    {% elif session.start_soc is not none or session.end_soc is not none %}
+    <div>
+        <h3 class="text-xs uppercase tracking-wide text-base-content/50 pb-2 mb-3 border-b border-base-300">Charge Curve</h3>
+        <a href="/battery?session={{ session.id }}" class="text-sm link link-primary">View charge curve</a>
+    </div>
+    {% endif %}
+
     <!-- EVSE / Charger -->
     <div>
         <div class="flex items-center gap-2 pb-2 mb-3 border-b border-base-300">
