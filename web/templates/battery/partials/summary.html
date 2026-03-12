@@ -1,0 +1,156 @@
+<!-- Summary Cards -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+
+    <!-- Battery Health -->
+    <div class="card bg-base-200">
+        <div class="card-body">
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Battery Health</p>
+            {% if summary.battery_health_pct is not none %}
+                <p class="text-3xl font-bold">{{ "%.0f"|format(summary.battery_health_pct) }}<span class="text-xl font-normal text-base-content/60">%</span></p>
+                <p class="text-sm text-base-content/60 mt-1">{{ "%.1f"|format(summary.battery_health_capacity) }} / {{ "%.1f"|format(summary.rated_capacity) }} kWh</p>
+            {% else %}
+                <p class="text-2xl font-semibold text-base-content/30">No data</p>
+                <p class="text-xs text-base-content/30 mt-1">Requires battery status data</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Current SOC -->
+    <div class="card bg-base-200">
+        <div class="card-body">
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Current SOC</p>
+            {% if summary.current_soc is not none %}
+                <p class="text-3xl font-bold">{{ "%.0f"|format(summary.current_soc) }}<span class="text-xl font-normal text-base-content/60">%</span></p>
+            {% else %}
+                <p class="text-2xl font-semibold text-base-content/30">No data</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Estimated Range -->
+    <div class="card bg-base-200">
+        <div class="card-body">
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Estimated Range</p>
+            {% if summary.latest_range is not none %}
+                <p class="text-3xl font-bold">{{ "%.0f"|format(summary.latest_range) }} <span class="text-xl font-normal text-base-content/60">mi</span></p>
+            {% else %}
+                <p class="text-2xl font-semibold text-base-content/30">No data</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Total Sessions -->
+    <div class="card bg-base-200">
+        <div class="card-body">
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Total Sessions</p>
+            <p class="text-3xl font-bold">{{ summary.total_sessions }}</p>
+        </div>
+    </div>
+
+</div>
+
+<!-- SOC Timeline -->
+<div class="card bg-base-200 mb-4">
+    <div class="card-body">
+        <h3 class="card-title text-sm font-medium text-base-content/60 mb-3">State of Charge</h3>
+        {% if soc_chart %}
+            <div id="soc-timeline-chart">
+                {{ soc_chart | safe }}
+            </div>
+            <p class="text-xs text-base-content/40 mt-2">Click a charging region to view its charge curve below.</p>
+        {% else %}
+            <p class="text-base-content/40 text-sm py-8 text-center">No SOC data available for this time range.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Charge Curve -->
+<div class="card bg-base-200 mb-4">
+    <div class="card-body">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="card-title text-sm font-medium text-base-content/60">Charge Curve</h3>
+            <select id="session-picker"
+                    class="select select-sm select-bordered w-auto max-w-xs"
+                    hx-get="/battery"
+                    hx-target="#battery-content"
+                    hx-swap="innerHTML"
+                    hx-include="[name='range']"
+                    name="session">
+                <option value="">Select a session...</option>
+                {% for s in sessions_list %}
+                <option value="{{ s.id }}" {{ 'selected' if active_session and s.id == active_session }}>
+                    {% if s.session_start_utc %}{{ s.session_start_utc|localtime(user_tz|default('UTC'), "%b %-d, %H:%M") }}{% endif %}
+                    {% if s.location_name %} - {{ s.location_name }}{% endif %}
+                    {% if s.energy_kwh %} ({{ "%.1f"|format(s.energy_kwh) }} kWh){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <!-- Pass active range as hidden input for HTMX session picker -->
+        <input type="hidden" name="range" value="{{ active_range }}">
+        {% if charge_curve_chart %}
+            {{ charge_curve_chart | safe }}
+        {% else %}
+            <p class="text-base-content/40 text-sm py-8 text-center">Select a session above to view its charge curve.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Degradation Trend -->
+<div class="card bg-base-200 mb-4">
+    <div class="card-body">
+        <h3 class="card-title text-sm font-medium text-base-content/60 mb-3">Battery Degradation</h3>
+        {% if degradation_chart %}
+            {{ degradation_chart | safe }}
+        {% else %}
+            <p class="text-base-content/40 text-sm py-8 text-center">No degradation data available for this time range.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Click-to-drill: SOC timeline click selects session in charge curve picker -->
+{% if soc_chart and sessions_list %}
+<script>
+(function() {
+    var sessionWindows = {{ session_time_windows | tojson }};
+    var chartEl = document.querySelector('#soc-timeline-chart .plotly-graph-div');
+    if (!chartEl || !sessionWindows.length) return;
+
+    // Wait for Plotly to be ready
+    function attachClickHandler() {
+        if (!chartEl.on) {
+            setTimeout(attachClickHandler, 200);
+            return;
+        }
+        chartEl.on('plotly_click', function(eventData) {
+            if (!eventData || !eventData.points || !eventData.points.length) return;
+            var clickedX = eventData.points[0].x;
+            var clickedTime = new Date(clickedX).getTime();
+
+            // Find the session whose start time is closest and before the clicked point
+            var bestSession = null;
+            var bestDiff = Infinity;
+            for (var i = 0; i < sessionWindows.length; i++) {
+                var sw = sessionWindows[i];
+                var startTime = new Date(sw.start).getTime();
+                var diff = Math.abs(clickedTime - startTime);
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestSession = sw;
+                }
+            }
+
+            // Only auto-select if within 2 hours of a session start
+            if (bestSession && bestDiff < 2 * 60 * 60 * 1000) {
+                var picker = document.getElementById('session-picker');
+                if (picker) {
+                    picker.value = bestSession.id;
+                    htmx.trigger(picker, 'change');
+                }
+            }
+        });
+    }
+    attachClickHandler();
+})();
+</script>
+{% endif %}
