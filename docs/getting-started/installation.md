@@ -2,6 +2,9 @@
 
 LightningROD runs as a Docker Compose stack with two services: the web application and PostgreSQL.
 
+!!! tip "Unraid?"
+    Dedicated [Unraid Setup guide](unraid.md) for Docker Compose Manager-specific steps.
+
 ## Requirements
 
 - Docker and Docker Compose

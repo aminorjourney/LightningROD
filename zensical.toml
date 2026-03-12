@@ -10,6 +10,7 @@ nav = [
   {"Home" = "index.md"},
   {"Getting Started" = [
     "getting-started/installation.md",
+    "getting-started/unraid.md",
     "getting-started/configuration.md",
     "getting-started/data-import.md",
   ]},
