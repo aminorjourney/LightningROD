@@ -161,7 +161,7 @@ async def query_efficiency_trend(
         stmt = stmt.where(EVTripMetrics.device_id == device_id)
 
     result = await db.execute(stmt)
-    return [
+    chart_data = [
         {
             "date": row.end_time,
             "efficiency": float(row.efficiency),
@@ -169,6 +169,20 @@ async def query_efficiency_trend(
         }
         for row in result.all()
     ]
+
+    # Adaptive downsampling — aggregate to daily averages for large datasets
+    if len(chart_data) > 200:
+        df = pd.DataFrame(chart_data)
+        df["date"] = pd.to_datetime(df["date"], utc=True)
+        chart_data = (
+            df.groupby(df["date"].dt.date)
+            .agg(efficiency=("efficiency", "mean"), distance=("distance", "sum"))
+            .reset_index()
+        )
+        chart_data["date"] = pd.to_datetime(chart_data["date"])
+        chart_data = chart_data.to_dict("records")
+
+    return chart_data
 
 
 # ---------------------------------------------------------------------------

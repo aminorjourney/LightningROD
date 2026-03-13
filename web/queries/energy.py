@@ -126,6 +126,21 @@ async def query_energy_summary(db: AsyncSession, time_range: str = "all", device
     best_efficiency = max(efficiencies) if efficiencies else None
     worst_efficiency = min(efficiencies) if efficiencies else None
 
+    # Adaptive downsampling for chart data — reduce dense scatter plots
+    # to daily averages when dataset is large (>200 points for all/1y ranges).
+    # Summary totals above remain unchanged — only chart data is reduced.
+    if len(sessions_for_chart) > 200 and time_range in ("all", "1y"):
+        df = pd.DataFrame(sessions_for_chart)
+        df["date"] = pd.to_datetime(df["date"], utc=True)
+        sessions_for_chart = (
+            df.groupby([df["date"].dt.date, "charge_type"])
+            .agg(efficiency_mi_kwh=("efficiency_mi_kwh", "mean"))
+            .reset_index()
+        )
+        # Convert date back to datetime for chart compatibility
+        sessions_for_chart["date"] = pd.to_datetime(sessions_for_chart["date"])
+        sessions_for_chart = sessions_for_chart.to_dict("records")
+
     return {
         "total_kwh": total_kwh,
         "total_sessions": total_sessions,
@@ -215,13 +230,27 @@ async def query_regen_for_chart(
     if not rows:
         return None
 
-    return [
+    chart_data = [
         {
             "date": r.start_time,
             "range_regenerated": float(r.range_regenerated),
         }
         for r in rows
     ]
+
+    # Adaptive downsampling — aggregate to daily sums for large datasets
+    if len(chart_data) > 200 and time_range in ("all", "1y"):
+        df = pd.DataFrame(chart_data)
+        df["date"] = pd.to_datetime(df["date"], utc=True)
+        chart_data = (
+            df.groupby(df["date"].dt.date)
+            .agg(range_regenerated=("range_regenerated", "sum"))
+            .reset_index()
+        )
+        chart_data["date"] = pd.to_datetime(chart_data["date"])
+        chart_data = chart_data.to_dict("records")
+
+    return chart_data
 
 
 async def query_monthly_energy(db: AsyncSession, time_range: str = "all", device_id: Optional[str] = None) -> list[dict]:
