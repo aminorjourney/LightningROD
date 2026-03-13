@@ -1,14 +1,15 @@
-"""Seed sample vehicle, battery status, and charging sessions into PostgreSQL.
+"""Seed sample vehicle, battery status, charging sessions, and trip metrics into PostgreSQL.
 
 Creates a sample 2024 F-150 Lightning SR XLT, sets it as the active vehicle,
-then seeds correlated battery telemetry and charging session data so that
-battery snapshots align with session records for testing.
+then seeds correlated battery telemetry, charging session, and trip metric data
+so that all records align for testing.
 
 Usage:
     uv run python scripts/seed_sample.py
     uv run python scripts/seed_sample.py --dry-run
     uv run python scripts/seed_sample.py --battery-only
     uv run python scripts/seed_sample.py --sessions-only
+    uv run python scripts/seed_sample.py --trips-only
     uv run python scripts/seed_sample.py --device-id CUSTOM_ID
 """
 
@@ -34,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from db.engine import AsyncSessionLocal
 from db.models.battery_status import EVBatteryStatus
 from db.models.charging_session import EVChargingSession
+from db.models.trip_metrics import EVTripMetrics
 from db.models.vehicle import EVVehicle
 
 SOURCE_SYSTEM = "sample_generator"
@@ -199,6 +201,44 @@ def transform_session_row(csv_row: dict, device_id: str) -> Optional[dict]:
     return db_row
 
 
+# ---------------------------------------------------------------------------
+# Trip metrics transform
+# ---------------------------------------------------------------------------
+
+def transform_trip_row(csv_row: dict, device_id: str) -> Optional[dict]:
+    start_time = parse_timestamp(csv_row.get("start_time", ""))
+    end_time = parse_timestamp(csv_row.get("end_time", ""))
+
+    if start_time is None and end_time is None:
+        return None
+
+    db_row = {
+        "device_id": device_id,
+        "start_time": start_time,
+        "end_time": end_time,
+        "recorded_at": parse_timestamp(csv_row.get("recorded_at", "")) or end_time,
+        "distance": float_or_none(csv_row.get("distance", "")),
+        "duration": float_or_none(csv_row.get("duration", "")),
+        "energy_consumed": float_or_none(csv_row.get("energy_consumed", "")),
+        "efficiency": float_or_none(csv_row.get("efficiency", "")),
+        "range_regenerated": float_or_none(csv_row.get("range_regenerated", "")),
+        "ambient_temp": float_or_none(csv_row.get("ambient_temp", "")),
+        "cabin_temp": float_or_none(csv_row.get("cabin_temp", "")),
+        "outside_air_temp": float_or_none(csv_row.get("outside_air_temp", "")),
+        "driving_score": float_or_none(csv_row.get("driving_score", "")),
+        "speed_score": float_or_none(csv_row.get("speed_score", "")),
+        "acceleration_score": float_or_none(csv_row.get("acceleration_score", "")),
+        "deceleration_score": float_or_none(csv_row.get("deceleration_score", "")),
+        "electrical_efficiency": float_or_none(csv_row.get("electrical_efficiency", "")),
+        "brake_torque": float_or_none(csv_row.get("brake_torque", "")),
+        "is_complete": parse_bool(csv_row.get("is_complete", "True")),
+        "source_system": SOURCE_SYSTEM,
+    }
+    if end_time:
+        db_row["original_timestamp"] = end_time
+    return db_row
+
+
 # Session columns to update on upsert conflict
 SESSION_UPDATABLE = [
     "device_id", "charge_type", "location_name", "location_type", "is_free",
@@ -352,6 +392,45 @@ async def seed_sessions(device_id: str, csv_path: str, dry_run: bool) -> int:
     return len(transformed)
 
 
+async def seed_trips(device_id: str, csv_path: str, dry_run: bool) -> int:
+    print(f"\n{'='*60}")
+    print(f"  TRIP METRICS")
+    print(f"{'='*60}")
+    print(f"  CSV: {csv_path}")
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        raw_rows = list(csv.DictReader(f))
+    print(f"  Loaded {len(raw_rows)} rows")
+
+    transformed = []
+    for raw_row in raw_rows:
+        db_row = transform_trip_row(raw_row, device_id)
+        if db_row:
+            transformed.append(db_row)
+    print(f"  Transformed {len(transformed)} rows")
+
+    if dry_run:
+        print(f"  [DRY RUN] Would insert {len(transformed)} rows")
+        return len(transformed)
+
+    batch_size = 500
+    async with AsyncSessionLocal() as session:
+        # Clear existing sample data
+        result = await session.execute(
+            text("DELETE FROM ev_trip_metrics WHERE source_system = :src AND device_id = :did"),
+            {"src": SOURCE_SYSTEM, "did": device_id},
+        )
+        print(f"  Cleared {result.rowcount} existing sample rows")
+
+        for i in range(0, len(transformed), batch_size):
+            batch = transformed[i : i + batch_size]
+            await session.execute(pg_insert(EVTripMetrics).values(batch))
+
+        await session.commit()
+    print(f"  Inserted {len(transformed)} rows")
+    return len(transformed)
+
+
 async def verify(device_id: str):
     print(f"\n{'='*60}")
     print(f"  VERIFICATION")
@@ -389,6 +468,22 @@ async def verify(device_id: str):
         )
         s = result.fetchone()
 
+        # Trip stats
+        result = await session.execute(
+            text("""
+                SELECT COUNT(*) AS total,
+                       MIN(start_time) AS earliest,
+                       MAX(end_time) AS latest,
+                       ROUND(SUM(distance)::numeric, 1) AS total_miles,
+                       ROUND(AVG(efficiency)::numeric, 2) AS avg_efficiency,
+                       ROUND(AVG(driving_score)::numeric, 1) AS avg_score,
+                       ROUND(SUM(energy_consumed)::numeric, 1) AS total_energy
+                FROM ev_trip_metrics WHERE device_id = :did
+            """),
+            {"did": device_id},
+        )
+        t = result.fetchone()
+
     print(f"\n  Battery Status:")
     print(f"    Total rows:   {b.total}")
     print(f"    Date range:   {str(b.earliest)[:10]} to {str(b.latest)[:10]}")
@@ -403,6 +498,15 @@ async def verify(device_id: str):
     print(f"    Total energy: {s.total_kwh} kWh")
     print(f"    Total cost:   ${s.total_cost}")
 
+    print(f"\n  Trip Metrics:")
+    print(f"    Total trips:  {t.total}")
+    if t.total > 0:
+        print(f"    Date range:   {str(t.earliest)[:10]} to {str(t.latest)[:10]}")
+        print(f"    Total miles:  {t.total_miles}")
+        print(f"    Avg eff:      {t.avg_efficiency} mi/kWh")
+        print(f"    Avg score:    {t.avg_score}")
+        print(f"    Total energy: {t.total_energy} kWh")
+
 
 async def seed(args: argparse.Namespace):
     device_id = args.device_id
@@ -411,6 +515,11 @@ async def seed(args: argparse.Namespace):
 
     battery_csv = str(data_dir / "battery_status_sample.csv")
     sessions_csv = str(data_dir / "charging_sessions_sample.csv")
+    trips_csv = str(data_dir / "trip_metrics_sample.csv")
+
+    # Determine which data types to seed
+    only_flags = [args.battery_only, args.sessions_only, args.trips_only]
+    seed_all = not any(only_flags)
 
     print(f"\n  Device ID: {device_id}")
     print(f"  Mode: {'DRY RUN' if dry_run else 'LIVE'}")
@@ -418,11 +527,14 @@ async def seed(args: argparse.Namespace):
     # Always create/update the sample vehicle first
     await seed_vehicle(device_id, dry_run)
 
-    if not args.sessions_only:
+    if seed_all or args.battery_only:
         await seed_battery(device_id, battery_csv, dry_run)
 
-    if not args.battery_only:
+    if seed_all or args.sessions_only:
         await seed_sessions(device_id, sessions_csv, dry_run)
+
+    if seed_all or args.trips_only:
+        await seed_trips(device_id, trips_csv, dry_run)
 
     if not dry_run:
         await verify(device_id)
@@ -439,6 +551,7 @@ Examples:
   uv run python scripts/seed_sample.py
   uv run python scripts/seed_sample.py --dry-run
   uv run python scripts/seed_sample.py --sessions-only
+  uv run python scripts/seed_sample.py --trips-only
   uv run python scripts/seed_sample.py --device-id CUSTOM_VIN
         """,
     )
@@ -446,6 +559,7 @@ Examples:
     parser.add_argument("--dry-run", action="store_true", help="Transform but don't write")
     parser.add_argument("--battery-only", action="store_true", help="Only seed battery status")
     parser.add_argument("--sessions-only", action="store_true", help="Only seed charging sessions")
+    parser.add_argument("--trips-only", action="store_true", help="Only seed trip metrics")
     args = parser.parse_args()
     asyncio.run(seed(args))
 
