@@ -107,6 +107,9 @@ _pending_vehicle_status_ts: dict[str, float] = {}  # device_id -> last_update ep
 _pending_battery_status: dict[str, dict[str, Any]] = {}
 _pending_battery_status_ts: dict[str, float] = {}
 
+# Track last-seen trip values per device to detect new trips
+_last_trip_values: dict[str, dict[str, Any]] = {}
+
 _FLUSH_TIMEOUT = 30  # seconds
 
 
@@ -175,6 +178,27 @@ def _get_attributes(new_state: dict) -> dict:
 def _get_unit_system(ha_config: dict) -> dict:
     """Extract HA unit system from config."""
     return ha_config.get("unit_system", {})
+
+
+def _get_event_timestamp(new_state: dict) -> Optional[datetime]:
+    """Extract event timestamp from HA state object.
+
+    Tries last_changed, then last_updated, parsing ISO format with timezone.
+    Returns None if no valid timestamp found.
+    """
+    for key in ("last_changed", "last_updated"):
+        val = new_state.get(key) if new_state else None
+        if val:
+            try:
+                if isinstance(val, str):
+                    if val.endswith("Z"):
+                        val = val[:-1] + "+00:00"
+                    return datetime.fromisoformat(val)
+                if isinstance(val, datetime):
+                    return val
+            except (ValueError, TypeError):
+                continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +337,86 @@ async def handle_battery_status(slug, new_state, ha_config, device_id, db):
         max_range = _safe_float(attrs.get("maximumBatteryRange"))
         if max_range is not None:
             pending["hv_battery_max_range"] = normalize_value(max_range, "mi", unit_system)
+
+        # --- Trip attributes from elveh entity ---
+        trip_attr_map = {
+            "tripDistanceTraveled": ("distance", lambda v: normalize_value(v, "mi", unit_system)),
+            "tripDuration": ("duration", _safe_float),
+            "tripEnergyConsumed": ("energy_consumed", _safe_float),
+            "tripEfficiency": ("efficiency", _safe_float),
+            "tripDrivingScore": ("driving_score", _safe_float),
+            "tripSpeed": ("speed_score", _safe_float),
+            "tripAcceleration": ("acceleration_score", _safe_float),
+            "tripDeceleration": ("deceleration_score", _safe_float),
+            "tripAmbientTemp": ("ambient_temp", lambda v: normalize_value(v, "degF", unit_system)),
+            "tripOutsideAirAmbientTemp": ("outside_air_temp", lambda v: normalize_value(v, "degF", unit_system)),
+            "tripCabinTemp": ("cabin_temp", lambda v: normalize_value(v, "degF", unit_system)),
+            "tripRangeRegeneration": ("range_regenerated", lambda v: normalize_value(v, "mi", unit_system)),
+            "tripElectricalEfficiency": ("electrical_efficiency", _safe_float),
+        }
+
+        trip_fields = {}
+        for attr_key, (field_name, converter) in trip_attr_map.items():
+            val = attrs.get(attr_key)
+            if val is not None:
+                converted = converter(val)
+                if converted is not None:
+                    trip_fields[field_name] = converted
+
+        if trip_fields.get("distance") or trip_fields.get("energy_consumed"):
+            last = _last_trip_values.get(device_id, {})
+            # Check if trip data actually changed (new trip)
+            is_new = (
+                not last
+                or last.get("distance") != trip_fields.get("distance")
+                or last.get("duration") != trip_fields.get("duration")
+                or last.get("efficiency") != trip_fields.get("efficiency")
+            )
+            if is_new:
+                _last_trip_values[device_id] = trip_fields.copy()
+                event_ts = _get_event_timestamp(new_state)
+                end_time = event_ts or datetime.now(timezone.utc)
+                start_time = None
+                if trip_fields.get("duration") and end_time:
+                    from datetime import timedelta
+                    start_time = end_time - timedelta(minutes=float(trip_fields["duration"]))
+
+                # DB-level duplicate check
+                from db.models.trip_metrics import EVTripMetrics
+                from sqlalchemy import select, desc
+
+                recent = await db.execute(
+                    select(EVTripMetrics)
+                    .where(EVTripMetrics.device_id == device_id)
+                    .order_by(desc(EVTripMetrics.end_time))
+                    .limit(1)
+                )
+                last_db_trip = recent.scalar_one_or_none()
+                if last_db_trip and (
+                    float(last_db_trip.distance or 0) == float(trip_fields.get("distance", -1))
+                    and float(last_db_trip.duration or 0) == float(trip_fields.get("duration", -1))
+                    and float(last_db_trip.efficiency or 0) == float(trip_fields.get("efficiency", -1))
+                ):
+                    logger.debug("Skipping duplicate trip for %s", device_id)
+                else:
+                    trip_record = EVTripMetrics(
+                        device_id=device_id,
+                        start_time=start_time,
+                        end_time=end_time,
+                        recorded_at=datetime.now(timezone.utc),
+                        is_complete=True,
+                        source_system="homeassistant",
+                        original_timestamp=event_ts,
+                        **trip_fields,
+                    )
+                    db.add(trip_record)
+                    await db.commit()
+                    logger.info(
+                        "Trip recorded for %s: %.1f mi, %.1f min",
+                        device_id,
+                        float(trip_fields.get("distance", 0)),
+                        float(trip_fields.get("duration", 0)),
+                    )
 
     elif slug == "battery":
         # 12V battery level (%)
