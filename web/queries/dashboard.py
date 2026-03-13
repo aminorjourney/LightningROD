@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from db.models.charging_session import EVChargingSession
 from web.queries.costs import (
@@ -42,16 +43,40 @@ async def query_dashboard_summary(db: AsyncSession, device_id: Optional[str] = N
     - avg_cost_per_session: float | None
     - avg_kwh_per_session: float | None
     """
+    # Use SQL aggregation for total_sessions and total_kwh (avoids loading all ORM objects)
+    agg_stmt = select(
+        func.count().label("total_sessions"),
+        func.coalesce(func.sum(EVChargingSession.energy_kwh), 0).label("total_kwh"),
+    )
+    if device_id:
+        agg_stmt = agg_stmt.where(EVChargingSession.device_id == device_id)
+    agg_result = await db.execute(agg_stmt)
+    agg_row = agg_result.one()
+    total_sessions = agg_row.total_sessions
+    total_kwh = float(agg_row.total_kwh)
+
+    # For cost calculation, load only the columns compute_session_cost needs
     networks_by_name = await get_networks_by_name(db)
 
-    stmt = select(EVChargingSession)
+    cost_stmt = select(EVChargingSession).options(
+        load_only(
+            EVChargingSession.id,
+            EVChargingSession.energy_kwh,
+            EVChargingSession.cost,
+            EVChargingSession.cost_source,
+            EVChargingSession.is_free,
+            EVChargingSession.location_name,
+            EVChargingSession.network_id,
+            EVChargingSession.location_id,
+            EVChargingSession.device_id,
+            EVChargingSession.session_start_utc,
+            EVChargingSession.estimated_cost,
+        )
+    )
     if device_id:
-        stmt = stmt.where(EVChargingSession.device_id == device_id)
-    result = await db.execute(stmt)
+        cost_stmt = cost_stmt.where(EVChargingSession.device_id == device_id)
+    result = await db.execute(cost_stmt)
     sessions = result.scalars().all()
-
-    total_sessions = len(sessions)
-    total_kwh = sum(float(s.energy_kwh or 0) for s in sessions)
 
     # Cost totals only for sessions with a resolved cost
     total_cost = 0.0
@@ -96,7 +121,14 @@ async def query_charging_efficiency(db: AsyncSession, device_id: Optional[str] =
     if device_id:
         loss_filters.append(EVChargingSession.device_id == device_id)
     loss_result = await db.execute(
-        select(EVChargingSession).where(and_(*loss_filters))
+        select(EVChargingSession)
+        .options(
+            load_only(
+                EVChargingSession.evse_energy_kwh,
+                EVChargingSession.energy_kwh,
+            )
+        )
+        .where(and_(*loss_filters))
     )
     loss_sessions = loss_result.scalars().all()
 
@@ -121,7 +153,15 @@ async def query_charging_efficiency(db: AsyncSession, device_id: Optional[str] =
     if device_id:
         util_filters.append(EVChargingSession.device_id == device_id)
     util_result = await db.execute(
-        select(EVChargingSession).where(and_(*util_filters))
+        select(EVChargingSession)
+        .options(
+            load_only(
+                EVChargingSession.max_power,
+                EVChargingSession.evse_max_power_kw,
+                EVChargingSession.charger_rated_kw,
+            )
+        )
+        .where(and_(*util_filters))
     )
     util_sessions = util_result.scalars().all()
 

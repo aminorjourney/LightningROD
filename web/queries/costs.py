@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.io as pio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from db.models.charging_session import EVChargingSession
 from db.models.reference import EVChargingNetwork, EVLocationLookup, EVNetworkSubscription
@@ -285,7 +286,23 @@ async def query_cost_summary(db: AsyncSession, time_range: str = "all", device_i
     networks_by_id = await get_networks_by_id(db)
     subs_by_network = await get_all_subscriptions_by_network(db)
 
-    stmt = select(EVChargingSession)
+    # Load only the columns needed for compute_session_cost + grouping
+    stmt = select(EVChargingSession).options(
+        load_only(
+            EVChargingSession.id,
+            EVChargingSession.energy_kwh,
+            EVChargingSession.cost,
+            EVChargingSession.cost_source,
+            EVChargingSession.is_free,
+            EVChargingSession.location_name,
+            EVChargingSession.location_type,
+            EVChargingSession.network_id,
+            EVChargingSession.location_id,
+            EVChargingSession.device_id,
+            EVChargingSession.session_start_utc,
+            EVChargingSession.estimated_cost,
+        )
+    )
     time_filter = build_time_filter(time_range)
     if time_filter is not None:
         stmt = stmt.where(time_filter)
@@ -397,7 +414,23 @@ async def query_monthly_costs(db: AsyncSession, time_range: str = "all", device_
     """
     networks_by_id = await get_networks_by_id(db)
 
-    stmt = select(EVChargingSession)
+    # Load only the columns needed for compute_session_cost + monthly grouping
+    stmt = select(EVChargingSession).options(
+        load_only(
+            EVChargingSession.id,
+            EVChargingSession.energy_kwh,
+            EVChargingSession.cost,
+            EVChargingSession.cost_source,
+            EVChargingSession.is_free,
+            EVChargingSession.location_name,
+            EVChargingSession.location_type,
+            EVChargingSession.network_id,
+            EVChargingSession.location_id,
+            EVChargingSession.device_id,
+            EVChargingSession.session_start_utc,
+            EVChargingSession.estimated_cost,
+        )
+    )
     time_filter = build_time_filter(time_range)
     if time_filter is not None:
         stmt = stmt.where(time_filter)
