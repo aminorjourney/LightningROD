@@ -1,0 +1,243 @@
+{# Locations tab content partial -- search, sort, filter, table #}
+
+{# Sub-filter buttons #}
+<div class="flex flex-wrap items-center gap-2 mb-4">
+    <button class="btn btn-sm {{ 'btn-active' if active_filter == 'all' }}"
+            hx-get="/charging/review/locations?filter=all&q={{ current_q | urlencode }}&sort={{ current_sort }}"
+            hx-target="#review-content"
+            hx-swap="innerHTML">
+        All <span class="badge badge-sm ml-1">{{ filter_counts.all }}</span>
+    </button>
+    <button class="btn btn-sm {{ 'btn-active' if active_filter == 'unverified' }}"
+            hx-get="/charging/review/locations?filter=unverified&q={{ current_q | urlencode }}&sort={{ current_sort }}"
+            hx-target="#review-content"
+            hx-swap="innerHTML">
+        Unverified <span class="badge badge-sm badge-warning ml-1">{{ filter_counts.unverified }}</span>
+    </button>
+    <button class="btn btn-sm {{ 'btn-active' if active_filter == 'verified' }}"
+            hx-get="/charging/review/locations?filter=verified&q={{ current_q | urlencode }}&sort={{ current_sort }}"
+            hx-target="#review-content"
+            hx-swap="innerHTML">
+        Verified <span class="badge badge-sm badge-success ml-1">{{ filter_counts.verified }}</span>
+    </button>
+</div>
+
+{# Search + sort row #}
+<div class="flex flex-wrap items-center gap-3 mb-4">
+    <input type="search" name="q" value="{{ current_q }}"
+           placeholder="Search locations..."
+           class="input input-bordered input-sm w-64"
+           hx-get="/charging/review/locations"
+           hx-trigger="input changed delay:300ms, search"
+           hx-target="#review-content"
+           hx-swap="innerHTML"
+           hx-include="[name='filter'], [name='sort']" />
+
+    <select name="sort" class="select select-bordered select-sm"
+            hx-get="/charging/review/locations"
+            hx-trigger="change"
+            hx-target="#review-content"
+            hx-swap="innerHTML"
+            hx-include="[name='filter'], [name='q']">
+        <option value="name" {{ 'selected' if current_sort == 'name' }}>Sort: Name</option>
+        <option value="sessions" {{ 'selected' if current_sort == 'sessions' }}>Sort: Sessions</option>
+        <option value="status" {{ 'selected' if current_sort == 'status' }}>Sort: Status</option>
+    </select>
+
+    <input type="hidden" name="filter" value="{{ active_filter }}">
+</div>
+
+{# Locations table #}
+{% if locations %}
+<div class="overflow-x-auto">
+    <table class="table table-sm">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Address</th>
+                <th>Type</th>
+                <th>Network</th>
+                <th>Sessions</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for loc in locations %}
+            <tr id="loc-row-{{ loc.id }}">
+                <td>{{ loc.location_name }}</td>
+                <td class="max-w-48 truncate">{{ loc.address or '-' }}</td>
+                <td>
+                    {% if loc.location_type %}
+                    <span class="badge badge-sm badge-ghost capitalize">{{ loc.location_type }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>
+                    {% set ns = namespace(network_name='-') %}
+                    {% for net in all_networks %}
+                        {% if net.id == loc.network_id %}
+                            {% set ns.network_name = net.network_name %}
+                        {% endif %}
+                    {% endfor %}
+                    {{ ns.network_name }}
+                </td>
+                <td>
+                    <span class="badge badge-sm badge-ghost">{{ loc_session_counts.get(loc.id, 0) }}</span>
+                </td>
+                <td>
+                    {% if loc.source_system == 'home_assistant' %}
+                    <span class="badge badge-sm badge-info">HA</span>
+                    {% elif loc.source_system == 'csv_import' %}
+                    <span class="badge badge-sm badge-accent">CSV</span>
+                    {% elif loc.source_system == 'manual' %}
+                    <span class="badge badge-sm badge-ghost">manual</span>
+                    {% elif loc.source_system %}
+                    <span class="badge badge-sm">{{ loc.source_system }}</span>
+                    {% else %}
+                    <span class="badge badge-sm badge-ghost">-</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if loc.is_verified %}
+                    <span class="badge badge-sm badge-success">Verified</span>
+                    {% else %}
+                    <span class="badge badge-sm badge-warning">Unverified</span>
+                    {% endif %}
+                </td>
+                <td class="flex gap-1 flex-wrap">
+                    {% if not loc.is_verified %}
+                    <button class="btn btn-xs btn-success"
+                            hx-post="/charging/review/location/{{ loc.id }}/verify"
+                            hx-target="#review-content"
+                            hx-swap="innerHTML">
+                        Verify
+                    </button>
+                    {% endif %}
+                    <button class="btn btn-xs btn-info"
+                            onclick="document.getElementById('edit-loc-{{ loc.id }}').showModal()">
+                        Edit
+                    </button>
+                    <button class="btn btn-xs btn-neutral"
+                            onclick="openMergeModal('location', {{ loc.id }})">
+                        Merge
+                    </button>
+                    {% if not loc.is_verified %}
+                    <button class="btn btn-xs btn-error"
+                            hx-post="/charging/review/location/{{ loc.id }}/delete"
+                            hx-target="#review-content"
+                            hx-swap="innerHTML"
+                            hx-confirm="Delete this location? Sessions will be unlinked.">
+                        Delete
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+
+            {# Edit modal for this location #}
+            <dialog id="edit-loc-{{ loc.id }}" class="modal">
+                <div class="modal-box max-w-lg">
+                    <form method="dialog">
+                        <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2">&#x2715;</button>
+                    </form>
+                    <p class="text-sm text-base-content/50 uppercase tracking-wide font-medium">Edit Location</p>
+                    <h3 class="text-xl font-semibold text-base-content">{{ loc.location_name }}</h3>
+
+                    <form hx-post="/charging/review/location/{{ loc.id }}/edit"
+                          hx-target="#review-content"
+                          hx-swap="innerHTML"
+                          class="mt-5 space-y-4">
+
+                        <label class="form-control w-full">
+                            <div class="label"><span class="label-text text-sm">Location Name</span></div>
+                            <input type="text" name="location_name" value="{{ loc.location_name }}"
+                                   class="input input-bordered w-full" required>
+                        </label>
+
+                        <div class="grid grid-cols-2 gap-4">
+                            <label class="form-control">
+                                <div class="label"><span class="label-text text-sm">Type</span></div>
+                                <select name="location_type" class="select select-bordered w-full">
+                                    <option value="">--</option>
+                                    {% for t in ['home', 'work', 'public', 'retail', 'destination', 'highway', 'other'] %}
+                                    <option value="{{ t }}" {{ 'selected' if loc.location_type == t }}>{{ t|capitalize }}</option>
+                                    {% endfor %}
+                                </select>
+                            </label>
+
+                            <label class="form-control">
+                                <div class="label"><span class="label-text text-sm">Network</span></div>
+                                <select name="network_id" class="select select-bordered w-full">
+                                    <option value="">None (standalone)</option>
+                                    {% for net in all_networks %}
+                                    <option value="{{ net.id }}" {{ 'selected' if net.id == loc.network_id }}>{{ net.network_name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </label>
+                        </div>
+
+                        <label class="form-control w-full">
+                            <div class="label"><span class="label-text text-sm">Address</span></div>
+                            <input type="text" name="address" value="{{ loc.address or '' }}"
+                                   placeholder="Street address (optional)"
+                                   class="input input-bordered w-full">
+                        </label>
+
+                        <div class="grid grid-cols-3 gap-4">
+                            <label class="form-control">
+                                <div class="label"><span class="label-text text-sm">Latitude</span></div>
+                                <input type="number" name="latitude" step="0.000001"
+                                       value="{{ loc.latitude or '' }}" placeholder="Lat"
+                                       class="input input-bordered w-full">
+                            </label>
+                            <label class="form-control">
+                                <div class="label"><span class="label-text text-sm">Longitude</span></div>
+                                <input type="number" name="longitude" step="0.000001"
+                                       value="{{ loc.longitude or '' }}" placeholder="Lon"
+                                       class="input input-bordered w-full">
+                            </label>
+                            <label class="form-control">
+                                <div class="label"><span class="label-text text-sm">Cost/kWh</span></div>
+                                <input type="number" name="cost_per_kwh" step="0.0001" min="0"
+                                       value="{{ loc.cost_per_kwh if loc.cost_per_kwh is not none else '' }}"
+                                       placeholder="Inherit"
+                                       class="input input-bordered w-full">
+                            </label>
+                        </div>
+
+                        <div class="flex items-center justify-end pt-4 mt-2 border-t border-base-300">
+                            <div class="flex items-center gap-3">
+                                <button type="button"
+                                        onclick="document.getElementById('edit-loc-{{ loc.id }}').close()"
+                                        class="btn btn-ghost">
+                                    Cancel
+                                </button>
+                                <button type="submit" class="btn btn-primary"
+                                        onclick="document.getElementById('edit-loc-{{ loc.id }}').close()">
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <form method="dialog" class="modal-backdrop"><button>close</button></form>
+            </dialog>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="alert">
+    <span>
+        {% if current_q %}
+        No locations matching "{{ current_q }}"
+        {% elif active_filter == 'unverified' %}
+        No unverified locations -- all locations are verified.
+        {% elif active_filter == 'verified' %}
+        No verified locations.
+        {% else %}
+        No locations found.
+        {% endif %}
+    </span>
+</div>
+{% endif %}
