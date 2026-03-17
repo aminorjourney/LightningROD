@@ -97,6 +97,11 @@ document.body.addEventListener('closeNetworkModal', function() {
     htmx.ajax('GET', '/charging/review/networks', {target: '#review-content', swap: 'innerHTML'});
 });
 
+// When merge completes, close the modal (table already refreshed by HTMX swap)
+document.body.addEventListener('closeMergeModal', function() {
+    closeMergeModal();
+});
+
 // Tab switching -- manage active class
 document.querySelectorAll('[role="tablist"] [role="tab"]').forEach(function(tab) {
     tab.addEventListener('click', function() {
