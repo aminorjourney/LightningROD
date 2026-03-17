@@ -708,7 +708,7 @@ async def handle_energy_transfer(slug, new_state, ha_config, device_id, db):
     network_id = None
     if network_name and network_name.upper() != "UNKNOWN":
         from web.queries.settings import resolve_network
-        network_id = await resolve_network(db, network_name=network_name)
+        network_id = await resolve_network(db, network_name=network_name, source_system="home_assistant")
 
     # -----------------------------------------------------------------------
     # Location resolution

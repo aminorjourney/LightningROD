@@ -40,6 +40,7 @@ async def resolve_network(
     db: AsyncSession,
     network_id: Optional[int] = None,
     network_name: Optional[str] = None,
+    source_system: Optional[str] = None,
 ) -> Optional[int]:
     """Resolve a network to its ID. Accepts ID directly or name for lookup/auto-create.
 
@@ -72,6 +73,8 @@ async def resolve_network(
         is_free=known["is_free"] if known else False,
         color=known["color"] if known else DEFAULT_COLOR,
         cost_per_kwh=known["cost_per_kwh"] if known else None,
+        is_verified=False,
+        source_system=source_system,
     )
     db.add(new_net)
     await db.flush()  # get the ID without committing
