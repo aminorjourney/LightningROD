@@ -1,13 +1,18 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.charging_session import EVChargingSession
-from db.models.reference import EVChargingNetwork, EVLocationLookup
+from db.models.reference import (
+    EVChargerStall,
+    EVChargingNetwork,
+    EVLocationLookup,
+    EVNetworkSubscription,
+)
 from web.dependencies import get_db
 from web.queries.settings import get_all_networks
 from web.queries.vehicles import get_active_vehicle, get_all_vehicles
@@ -421,3 +426,221 @@ async def delete_network(
         "charging/partials/review_networks_table.html",
         ctx,
     )
+
+
+# ---------------------------------------------------------------------------
+# Merge endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/review/network/{source_id}/merge-preview", response_class=HTMLResponse)
+async def network_merge_preview(
+    source_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Show merge preview modal for a network with counts of affected items."""
+    result = await db.execute(
+        select(EVChargingNetwork).where(EVChargingNetwork.id == source_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source network not found")
+
+    # Count affected rows
+    session_count = (
+        await db.execute(
+            select(func.count()).select_from(EVChargingSession).where(
+                EVChargingSession.network_id == source_id
+            )
+        )
+    ).scalar() or 0
+
+    subscription_count = (
+        await db.execute(
+            select(func.count()).select_from(EVNetworkSubscription).where(
+                EVNetworkSubscription.network_id == source_id
+            )
+        )
+    ).scalar() or 0
+
+    location_count = (
+        await db.execute(
+            select(func.count()).select_from(EVLocationLookup).where(
+                EVLocationLookup.network_id == source_id
+            )
+        )
+    ).scalar() or 0
+
+    # All networks except source for target dropdown
+    all_nets = await get_all_networks(db)
+    target_options = [n for n in all_nets if n.id != source_id]
+
+    return templates.TemplateResponse(
+        request,
+        "charging/partials/merge_network_modal.html",
+        {
+            "source": source,
+            "session_count": session_count,
+            "subscription_count": subscription_count,
+            "location_count": location_count,
+            "target_options": target_options,
+        },
+    )
+
+
+@router.post("/review/network/{source_id}/merge", response_class=HTMLResponse)
+async def merge_network(
+    source_id: int,
+    request: Request,
+    target_id: int = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge source network into target: reassign all references, delete source."""
+    if source_id == target_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a network into itself")
+
+    # Validate both exist
+    source = (
+        await db.execute(select(EVChargingNetwork).where(EVChargingNetwork.id == source_id))
+    ).scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source network not found")
+
+    target = (
+        await db.execute(select(EVChargingNetwork).where(EVChargingNetwork.id == target_id))
+    ).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target network not found")
+
+    # Reassign all FK references to target
+    await db.execute(
+        update(EVChargingSession)
+        .where(EVChargingSession.network_id == source_id)
+        .values(network_id=target_id)
+    )
+    await db.execute(
+        update(EVNetworkSubscription)
+        .where(EVNetworkSubscription.network_id == source_id)
+        .values(network_id=target_id)
+    )
+    await db.execute(
+        update(EVLocationLookup)
+        .where(EVLocationLookup.network_id == source_id)
+        .values(network_id=target_id)
+    )
+
+    # Delete source
+    await db.execute(delete(EVChargingNetwork).where(EVChargingNetwork.id == source_id))
+    await db.commit()
+
+    # Return refreshed networks table with HX-Trigger to close modal
+    ctx = await _networks_context(db)
+    response = templates.TemplateResponse(
+        request,
+        "charging/partials/review_networks_table.html",
+        ctx,
+    )
+    response.headers["HX-Trigger"] = "closeMergeModal"
+    return response
+
+
+@router.get("/review/location/{source_id}/merge-preview", response_class=HTMLResponse)
+async def location_merge_preview(
+    source_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Show merge preview modal for a location with counts of affected items."""
+    result = await db.execute(
+        select(EVLocationLookup).where(EVLocationLookup.id == source_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source location not found")
+
+    # Count affected rows
+    session_count = (
+        await db.execute(
+            select(func.count()).select_from(EVChargingSession).where(
+                EVChargingSession.location_id == source_id
+            )
+        )
+    ).scalar() or 0
+
+    stall_count = (
+        await db.execute(
+            select(func.count()).select_from(EVChargerStall).where(
+                EVChargerStall.location_id == source_id
+            )
+        )
+    ).scalar() or 0
+
+    # All locations except source for target dropdown
+    all_locs_result = await db.execute(
+        select(EVLocationLookup).order_by(EVLocationLookup.location_name)
+    )
+    all_locs = list(all_locs_result.scalars().all())
+    target_options = [loc for loc in all_locs if loc.id != source_id]
+
+    return templates.TemplateResponse(
+        request,
+        "charging/partials/merge_location_modal.html",
+        {
+            "source": source,
+            "session_count": session_count,
+            "stall_count": stall_count,
+            "target_options": target_options,
+        },
+    )
+
+
+@router.post("/review/location/{source_id}/merge", response_class=HTMLResponse)
+async def merge_location(
+    source_id: int,
+    request: Request,
+    target_id: int = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge source location into target: reassign all references, delete source."""
+    if source_id == target_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a location into itself")
+
+    # Validate both exist
+    source = (
+        await db.execute(select(EVLocationLookup).where(EVLocationLookup.id == source_id))
+    ).scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source location not found")
+
+    target = (
+        await db.execute(select(EVLocationLookup).where(EVLocationLookup.id == target_id))
+    ).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target location not found")
+
+    # Reassign all FK references to target
+    await db.execute(
+        update(EVChargingSession)
+        .where(EVChargingSession.location_id == source_id)
+        .values(location_id=target_id)
+    )
+    await db.execute(
+        update(EVChargerStall)
+        .where(EVChargerStall.location_id == source_id)
+        .values(location_id=target_id)
+    )
+
+    # Delete source
+    await db.execute(delete(EVLocationLookup).where(EVLocationLookup.id == source_id))
+    await db.commit()
+
+    # Return refreshed locations table with HX-Trigger to close modal
+    ctx = await _locations_context(db)
+    response = templates.TemplateResponse(
+        request,
+        "charging/partials/review_locations_table.html",
+        ctx,
+    )
+    response.headers["HX-Trigger"] = "closeMergeModal"
+    return response
