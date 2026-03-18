@@ -92,7 +92,7 @@
 
                     <!-- Charging section (collapsible, auto-expands) -->
                     <li>
-                        <details {{ 'open' if active_page in ['sessions', 'costs', 'energy', 'review_queue'] }}>
+                        <details {{ 'open' if active_page in ['sessions', 'costs', 'energy'] }}>
                             <summary>
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
@@ -103,10 +103,17 @@
                                 <li><a href="/charging/sessions" class="{{ 'active' if active_page == 'sessions' }}">Sessions</a></li>
                                 <li><a href="/charging/costs" class="{{ 'active' if active_page == 'costs' }}">Costs</a></li>
                                 <li><a href="/charging/energy" class="{{ 'active' if active_page == 'energy' }}">Energy</a></li>
-                                <li><a href="/charging/review" class="{{ 'active' if active_page == 'review_queue' }}">Review Queue</a></li>
                             </ul>
                         </details>
                     </li>
+
+                    <!-- Review Queue (top-level) -->
+                    <li><a href="/review" class="{{ 'active' if active_page == 'review_queue' }}">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                        </svg>
+                        Review Queue
+                    </a></li>
 
                     <!-- Trips section -->
                     <li>

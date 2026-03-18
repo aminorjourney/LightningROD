@@ -3,19 +3,19 @@
 {# Sub-filter buttons #}
 <div class="flex flex-wrap items-center gap-2 mb-4">
     <button class="btn btn-sm {{ 'btn-active' if active_filter == 'all' }}"
-            hx-get="/charging/review/networks?filter=all&q={{ current_q | urlencode }}&sort={{ current_sort }}"
+            hx-get="/review/networks?filter=all&q={{ current_q | urlencode }}&sort={{ current_sort }}"
             hx-target="#review-content"
             hx-swap="innerHTML">
         All <span class="badge badge-sm ml-1">{{ filter_counts.all }}</span>
     </button>
     <button class="btn btn-sm {{ 'btn-active' if active_filter == 'unverified' }}"
-            hx-get="/charging/review/networks?filter=unverified&q={{ current_q | urlencode }}&sort={{ current_sort }}"
+            hx-get="/review/networks?filter=unverified&q={{ current_q | urlencode }}&sort={{ current_sort }}"
             hx-target="#review-content"
             hx-swap="innerHTML">
         Unverified <span class="badge badge-sm badge-warning ml-1">{{ filter_counts.unverified }}</span>
     </button>
     <button class="btn btn-sm {{ 'btn-active' if active_filter == 'verified' }}"
-            hx-get="/charging/review/networks?filter=verified&q={{ current_q | urlencode }}&sort={{ current_sort }}"
+            hx-get="/review/networks?filter=verified&q={{ current_q | urlencode }}&sort={{ current_sort }}"
             hx-target="#review-content"
             hx-swap="innerHTML">
         Verified <span class="badge badge-sm badge-success ml-1">{{ filter_counts.verified }}</span>
@@ -27,14 +27,14 @@
     <input type="search" name="q" value="{{ current_q }}"
            placeholder="Search networks..."
            class="input input-bordered input-sm w-64"
-           hx-get="/charging/review/networks"
+           hx-get="/review/networks"
            hx-trigger="input changed delay:300ms, search"
            hx-target="#review-content"
            hx-swap="innerHTML"
            hx-include="[name='filter'], [name='sort']" />
 
     <select name="sort" class="select select-bordered select-sm"
-            hx-get="/charging/review/networks"
+            hx-get="/review/networks"
             hx-trigger="change"
             hx-target="#review-content"
             hx-swap="innerHTML"
@@ -95,7 +95,7 @@
                 <td class="flex gap-1 flex-wrap">
                     {% if not net.is_verified %}
                     <button class="btn btn-xs btn-success"
-                            hx-post="/charging/review/network/{{ net.id }}/verify"
+                            hx-post="/review/network/{{ net.id }}/verify"
                             hx-target="#review-content"
                             hx-swap="innerHTML">
                         Verify
@@ -111,7 +111,7 @@
                     </button>
                     {% if not net.is_verified %}
                     <button class="btn btn-xs btn-error"
-                            hx-post="/charging/review/network/{{ net.id }}/delete"
+                            hx-post="/review/network/{{ net.id }}/delete"
                             hx-target="#review-content"
                             hx-swap="innerHTML"
                             hx-confirm="Delete this network? Sessions will be unlinked.">

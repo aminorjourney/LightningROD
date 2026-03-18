@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from db.engine import AsyncSessionLocal, engine
 from web.queries.settings import seed_charger_templates
-from web.routes import battery, charging, csv_import, dashboard, sessions, costs, energy, settings, trips
+from web.routes import battery, charging, csv_import, dashboard, sessions, costs, energy, review, settings, trips
 
 
 def localtime_filter(dt, tz_str: str = "UTC", fmt: str | None = None):
@@ -65,10 +65,11 @@ def create_app() -> FastAPI:
     app.include_router(csv_import.router)
     app.include_router(battery.router)
     app.include_router(charging.router)
+    app.include_router(review.router)
     app.include_router(trips.router)
 
     # Register localtime filter on all Jinja2Templates instances used by routes
-    for route_module in [dashboard, sessions, costs, energy, settings, csv_import, charging, battery, trips]:
+    for route_module in [dashboard, sessions, costs, energy, settings, csv_import, charging, review, battery, trips]:
         if hasattr(route_module, "templates"):
             route_module.templates.env.filters["localtime"] = localtime_filter
 

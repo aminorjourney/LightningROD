@@ -11,7 +11,7 @@
     <div role="tablist" class="tabs tabs-bordered mb-4">
         <a role="tab"
            class="tab {{ 'tab-active' if active_tab == 'networks' }} gap-2"
-           hx-get="/charging/review/networks"
+           hx-get="/review/networks"
            hx-target="#review-content"
            hx-swap="innerHTML">
             Networks
@@ -19,7 +19,7 @@
         </a>
         <a role="tab"
            class="tab {{ 'tab-active' if active_tab == 'locations' }} gap-2"
-           hx-get="/charging/review/locations"
+           hx-get="/review/locations"
            hx-target="#review-content"
            hx-swap="innerHTML">
             Locations
@@ -30,9 +30,9 @@
     {# Tab content area #}
     <div id="review-content">
         {% if active_tab == 'locations' %}
-            {% include "charging/partials/review_locations_table.html" %}
+            {% include "review/partials/review_locations_table.html" %}
         {% else %}
-            {% include "charging/partials/review_networks_table.html" %}
+            {% include "review/partials/review_networks_table.html" %}
         {% endif %}
     </div>
 </div>
@@ -81,7 +81,7 @@ function closeNetworkModal() {
 }
 
 function openMergeModal(type, sourceId) {
-    htmx.ajax('GET', '/charging/review/' + type + '/' + sourceId + '/merge-preview',
+    htmx.ajax('GET', '/review/' + type + '/' + sourceId + '/merge-preview',
         {target: '#merge-modal-content', swap: 'innerHTML'});
     document.getElementById('merge-modal').showModal();
 }
@@ -94,7 +94,7 @@ function closeMergeModal() {
 // When network modal closes (after save/convert), refresh the active tab
 document.body.addEventListener('closeNetworkModal', function() {
     closeNetworkModal();
-    htmx.ajax('GET', '/charging/review/networks', {target: '#review-content', swap: 'innerHTML'});
+    htmx.ajax('GET', '/review/networks', {target: '#review-content', swap: 'innerHTML'});
 });
 
 // When merge completes, close the modal (table already refreshed by HTMX swap)
