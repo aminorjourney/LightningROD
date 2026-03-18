@@ -59,3 +59,12 @@ async def db_session(test_engine):
         if nested.is_active:
             await nested.rollback()
         await trans.rollback()
+
+
+@pytest.fixture(autouse=True)
+def reset_factories():
+    """Reset factory seed before each test for deterministic data generation."""
+    from tests.factories import BaseFactory
+
+    BaseFactory.reset_seed()
+    yield
