@@ -48,6 +48,9 @@ async def create_vehicle(
     vin: Optional[str] = None,
     device_id: Optional[str] = None,
     source_system: Optional[str] = None,
+    ice_mpg: Optional[float] = None,
+    ice_fuel_tank_gal: Optional[float] = None,
+    ice_label: Optional[str] = None,
 ) -> Optional[EVVehicle]:
     """Create a new vehicle record.
 
@@ -67,6 +70,9 @@ async def create_vehicle(
         vin=vin if vin else None,  # Avoid empty string violating unique
         device_id=device_id,
         source_system=source_system,
+        ice_mpg=ice_mpg,
+        ice_fuel_tank_gal=ice_fuel_tank_gal,
+        ice_label=ice_label,
     )
     db.add(vehicle)
     try:
@@ -95,6 +101,7 @@ async def update_vehicle(
     allowed_fields = {
         "display_name", "make", "model", "year", "trim",
         "battery_capacity_kwh", "vin", "device_id", "source_system",
+        "ice_mpg", "ice_fuel_tank_gal", "ice_label",
     }
     for key, value in kwargs.items():
         if key in allowed_fields:
