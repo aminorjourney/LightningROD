@@ -34,4 +34,11 @@ done
 echo "Test DB ready."
 
 # Run pytest, passing through all arguments (default: -x --tb=short)
-python -m pytest "${@:--x --tb=short}"
+# Use venv python if available, else system python3
+if [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+$PYTHON -m pytest "${@:--x --tb=short}"
