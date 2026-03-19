@@ -3,7 +3,8 @@
 Dispatches HA state_changed events to registered sensor handlers.
 Maps 29 FordPass entities to database records: charging sessions from
 energytransferlogentry, vehicle status snapshots, and battery status updates.
-Normalizes units to metric before storage.
+Also handles gas price sensor events from arbitrary entity_ids configured
+in app_settings. Normalizes units to metric before storage.
 """
 
 import asyncio
@@ -770,6 +771,103 @@ async def handle_energy_transfer(slug, new_state, ha_config, device_id, db):
 
 
 # ---------------------------------------------------------------------------
+# Gas price sensor handling (non-slug, arbitrary entity_ids)
+# ---------------------------------------------------------------------------
+
+# Cache for gas sensor entity_ids from app_settings to avoid per-event DB query
+_gas_sensor_cache: dict[str, Optional[str]] = {}
+_gas_sensor_cache_ts: float = 0.0
+_GAS_SENSOR_CACHE_TTL = 300  # seconds (5 minutes)
+
+
+async def _get_gas_sensor_entity_ids(db) -> tuple[Optional[str], Optional[str]]:
+    """Return (station_entity_id, average_entity_id) from app_settings, cached.
+
+    Cache is refreshed every 5 minutes to pick up configuration changes
+    without querying app_settings on every single event.
+    """
+    global _gas_sensor_cache, _gas_sensor_cache_ts
+
+    now = time.time()
+    if _gas_sensor_cache and (now - _gas_sensor_cache_ts) < _GAS_SENSOR_CACHE_TTL:
+        logger.debug("Gas sensor cache hit")
+        return (
+            _gas_sensor_cache.get("gas_sensor_station_entity_id"),
+            _gas_sensor_cache.get("gas_sensor_average_entity_id"),
+        )
+
+    from web.queries.settings import get_app_settings_dict
+
+    gas_settings = await get_app_settings_dict(
+        db, ["gas_sensor_station_entity_id", "gas_sensor_average_entity_id"]
+    )
+    _gas_sensor_cache = gas_settings
+    _gas_sensor_cache_ts = now
+    logger.debug("Gas sensor cache refreshed: %s", gas_settings)
+    return (
+        gas_settings.get("gas_sensor_station_entity_id") or None,
+        gas_settings.get("gas_sensor_average_entity_id") or None,
+    )
+
+
+def invalidate_gas_sensor_cache() -> None:
+    """Invalidate the gas sensor entity_id cache.
+
+    Call this when gas sensor settings are updated via the settings UI.
+    """
+    global _gas_sensor_cache, _gas_sensor_cache_ts
+    _gas_sensor_cache = {}
+    _gas_sensor_cache_ts = 0.0
+
+
+async def _handle_gas_sensor_event(
+    entity_id: str,
+    new_state: dict,
+    station_entity: Optional[str],
+    average_entity: Optional[str],
+    db,
+) -> bool:
+    """Handle a gas price sensor event if entity_id matches configured sensors.
+
+    Returns True if the event was handled (entity_id matched), False otherwise.
+    Non-numeric state values are skipped gracefully.
+    """
+    if entity_id != station_entity and entity_id != average_entity:
+        return False
+
+    state_val = _get_state_value(new_state)
+    if state_val is None or state_val in ("unknown", "unavailable", ""):
+        logger.debug("Gas sensor %s has non-numeric state '%s', skipping", entity_id, state_val)
+        return True  # Matched but not actionable
+
+    price = _safe_float(state_val)
+    if price is None or price <= 0:
+        logger.debug("Gas sensor %s value not a valid price: '%s', skipping", entity_id, state_val)
+        return True
+
+    recorded_at = _get_event_timestamp(new_state) or datetime.now(timezone.utc)
+
+    from web.queries.gas_prices import (
+        compute_monthly_averages,
+        store_gas_price_reading,
+        upsert_gas_price,
+    )
+
+    await store_gas_price_reading(db, entity_id, price, recorded_at)
+    logger.info("Gas price reading stored: entity=%s, price=%.3f, at=%s", entity_id, price, recorded_at)
+
+    # Compute monthly averages and upsert into gas_price_history
+    month_avg = await compute_monthly_averages(db, entity_id)
+    for (year, month), avg_price in month_avg.items():
+        if entity_id == station_entity:
+            await upsert_gas_price(db, year, month, station_price=avg_price, source="ha_sensor")
+        elif entity_id == average_entity:
+            await upsert_gas_price(db, year, month, average_price=avg_price, source="ha_sensor")
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Main event dispatcher
 # ---------------------------------------------------------------------------
 
@@ -822,17 +920,34 @@ async def process_state_change(
 ) -> None:
     """Main event handler -- dispatches to registered sensor handlers.
 
-    Called by HASSClient for each state_changed event. Resolves the sensor
-    slug, looks up the handler, opens a DB session, and delegates.
+    Called by HASSClient for each state_changed event. First checks if the
+    entity_id matches a configured gas price sensor (arbitrary entity_ids).
+    Then falls through to slug-based FordPass handler dispatch.
     """
+    from db.engine import AsyncSessionLocal
+
+    # --- Gas price sensor check (before slug-based dispatch) ---
+    # Gas sensors use arbitrary entity_ids, not the FordPass slug pattern
+    async with AsyncSessionLocal() as db:
+        try:
+            station_entity, average_entity = await _get_gas_sensor_entity_ids(db)
+            if station_entity or average_entity:
+                handled = await _handle_gas_sensor_event(
+                    entity_id, new_state, station_entity, average_entity, db
+                )
+                if handled:
+                    return  # Gas sensor event fully handled
+        except Exception as e:
+            await db.rollback()
+            logger.error("Error checking gas sensor for %s: %s", entity_id, e, exc_info=True)
+
+    # --- Slug-based FordPass handler dispatch ---
     slug = extract_slug(entity_id)
     if slug is None or slug not in SENSOR_HANDLERS:
         return  # Unhandled entity, ignore silently
 
     handler = SENSOR_HANDLERS[slug]
     device_id = get_device_id(entity_id, ha_config)
-
-    from db.engine import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
         try:
