@@ -28,7 +28,7 @@ def build_battery_time_filter(range_str: str):
 
     Same logic as costs.build_time_filter but targets EVBatteryStatus.recorded_at.
     Returns None for 'all' (no filter).
-    Accepts: '7d', '30d', '90d', 'all'
+    Accepts: '7d', '30d', '90d', 'ytd', '1y', 'all'
     """
     if not range_str or range_str == "all":
         return None
@@ -41,6 +41,10 @@ def build_battery_time_filter(range_str: str):
         cutoff = now - timedelta(days=30)
     elif range_str == "90d":
         cutoff = now - timedelta(days=90)
+    elif range_str == "ytd":
+        cutoff = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif range_str == "1y":
+        cutoff = now - timedelta(days=365)
     else:
         return None
 
@@ -87,10 +91,15 @@ async def query_soc_timeline(
     if df.empty:
         return []
 
-    # Adaptive downsampling based on data volume
-    if len(df) > 2000:
+    # Adaptive downsampling — target ~500-800 points for responsive charts
+    if len(df) > 800:
         df = df.set_index("recorded_at")
-        bucket = "30min" if len(df) < 10000 else "1h"
+        if len(df) > 5000:
+            bucket = "2h"
+        elif len(df) > 2000:
+            bucket = "1h"
+        else:
+            bucket = "30min"
         df = (
             df.resample(bucket)
             .agg({"soc": "mean", "kw": "mean", "range": "last"})
@@ -113,7 +122,8 @@ def detect_charging_regions(data: list[dict]) -> list[tuple[int, int]]:
 
     for i, row in enumerate(data):
         kw = row.get("kw") or 0
-        if float(kw) > CHARGE_THRESHOLD_KW:
+        # Charging = negative kW (power flowing into battery) OR positive above threshold
+        if abs(float(kw)) > CHARGE_THRESHOLD_KW and float(kw) < 0:
             if not in_charge:
                 start_idx = i
                 in_charge = True
