@@ -5,6 +5,8 @@ the production engine (db/engine.py) from connecting to the dev database.
 """
 
 import os
+import subprocess
+import sys
 
 # Set test environment BEFORE any app imports (Pitfall 3 from RESEARCH.md)
 os.environ["POSTGRES_USER"] = "lightningrod_test"
@@ -17,48 +19,68 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 TEST_DB_URL = "postgresql+asyncpg://lightningrod_test:testpass@localhost:5433/lightningrod_test"
-TEST_DB_URL_SYNC = "postgresql://lightningrod_test:testpass@localhost:5433/lightningrod_test"
+
+_migrations_done = False
 
 
-@pytest_asyncio.fixture(scope="session")
-async def test_engine():
-    """Create a test engine once per session and run Alembic migrations."""
-    engine = create_async_engine(TEST_DB_URL, echo=False)
+def _run_alembic_migrations():
+    """Run Alembic migrations via subprocess to avoid event loop conflicts.
 
-    # Run Alembic migrations using the sync driver (Alembic does not support async)
-    from alembic.config import Config
-    from alembic import command
+    The Alembic env.py uses asyncio.run() internally, which cannot be called
+    from within an already-running event loop (as in an async pytest fixture).
+    Running as a subprocess avoids this entirely.
+    """
+    global _migrations_done
+    if _migrations_done:
+        return
 
-    alembic_cfg = Config("alembic.ini")
-    alembic_cfg.set_main_option("sqlalchemy.url", TEST_DB_URL_SYNC)
-    alembic_cfg.set_main_option("script_location", "db/migrations")
-    command.upgrade(alembic_cfg, "head")
+    env = os.environ.copy()
+    env["POSTGRES_USER"] = "lightningrod_test"
+    env["POSTGRES_PASSWORD"] = "testpass"
+    env["POSTGRES_DB"] = "lightningrod_test"
+    env["POSTGRES_HOST"] = "localhost:5433"
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Alembic migration failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        )
+    _migrations_done = True
 
-    yield engine
-    await engine.dispose()
+
+# Run migrations once at module load time (before any tests)
+_run_alembic_migrations()
 
 
 @pytest_asyncio.fixture
-async def db_session(test_engine):
+async def db_session():
     """Per-test DB session with transaction rollback isolation.
 
-    Each test gets a clean session backed by a transaction that rolls back
+    Each test gets a fresh engine + connection + transaction that rolls back
     after the test completes, so no data persists between tests.
-    """
-    async with test_engine.connect() as conn:
-        trans = await conn.begin()
-        session = AsyncSession(bind=conn, expire_on_commit=False)
 
-        # Begin a nested savepoint so factories can flush() without ending
-        # the outer transaction
-        nested = await conn.begin_nested()
+    Uses join_transaction_mode='create_savepoint' so that when the session
+    does internal operations (like autoflush), it creates sub-savepoints
+    within the test transaction rather than committing.
+    """
+    engine = create_async_engine(TEST_DB_URL, echo=False)
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        session = AsyncSession(
+            bind=conn,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
 
         yield session
 
         await session.close()
-        if nested.is_active:
-            await nested.rollback()
         await trans.rollback()
+    await engine.dispose()
 
 
 @pytest.fixture(autouse=True)
