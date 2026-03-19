@@ -16,7 +16,6 @@ import websockets
 from websockets.exceptions import (
     ConnectionClosed,
     ConnectionClosedError,
-    InvalidStatusCode,
     WebSocketException,
 )
 

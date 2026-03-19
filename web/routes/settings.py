@@ -1312,6 +1312,8 @@ async def save_gas_sensors(
 ):
     await set_app_setting(db, "gas_sensor_station_entity_id", gas_sensor_station_entity_id or "")
     await set_app_setting(db, "gas_sensor_average_entity_id", gas_sensor_average_entity_id or "")
+    from web.services.hass_processor import invalidate_gas_sensor_cache
+    invalidate_gas_sensor_cache()
     ctx = await _gas_price_history_context(db)
     ctx["saved"] = True
     return templates.TemplateResponse(
