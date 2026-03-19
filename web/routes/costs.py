@@ -54,7 +54,9 @@ async def costs(
 
     if show_comparisons:
         if toggles.get("comparison_gas_enabled", "true") != "false":
-            gas_comparison = await query_gas_comparison(db, time_range=range or "all")
+            gas_comparison = await query_gas_comparison(
+                db, device_id=active_device_id, vehicle=active_vehicle, time_range=range or "all"
+            )
 
         networks = all_networks
         if toggles.get("comparison_network_enabled", "true") != "false":
