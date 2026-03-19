@@ -41,4 +41,8 @@ else
     PYTHON="python3"
 fi
 
-$PYTHON -m pytest "${@:--x --tb=short}"
+if [ $# -eq 0 ]; then
+    $PYTHON -m pytest -x --tb=short
+else
+    $PYTHON -m pytest "$@"
+fi
