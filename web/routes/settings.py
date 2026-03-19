@@ -42,6 +42,7 @@ from web.queries.vehicles import (
     set_active_vehicle,
     update_vehicle,
 )
+from web.queries.gas_prices import delete_gas_price, get_all_gas_prices, upsert_gas_price
 from web.services.csv_parser import get_db_field_options
 
 router = APIRouter()
@@ -77,13 +78,13 @@ async def _vehicle_management_context(db: AsyncSession) -> dict:
 
 
 SETTINGS_KEYS = [
-    "gas_price_per_gallon",
-    "vehicle_mpg",
     "comparison_gas_enabled",
     "comparison_network_enabled",
     "comparison_section_visible",
     "efficiency_unit",
     "user_timezone",
+    "gas_sensor_station_entity_id",
+    "gas_sensor_average_entity_id",
 ]
 
 
@@ -175,6 +176,9 @@ async def create_vehicle_route(
     battery_capacity_kwh: Optional[float] = Form(None),
     vin: Optional[str] = Form(None),
     device_id: Optional[str] = Form(None),
+    ice_mpg: Optional[float] = Form(None),
+    ice_fuel_tank_gal: Optional[float] = Form(None),
+    ice_label: Optional[str] = Form(None),
 ):
     if not display_name or not display_name.strip():
         from fastapi.responses import JSONResponse
@@ -192,6 +196,9 @@ async def create_vehicle_route(
         battery_capacity_kwh=battery_capacity_kwh,
         vin=vin or None,
         device_id=device_id or None,
+        ice_mpg=ice_mpg,
+        ice_fuel_tank_gal=ice_fuel_tank_gal,
+        ice_label=ice_label or None,
     )
     veh_ctx = await _vehicle_management_context(db)
     return templates.TemplateResponse(
@@ -231,6 +238,9 @@ async def update_vehicle_route(
     battery_capacity_kwh: Optional[float] = Form(None),
     vin: Optional[str] = Form(None),
     device_id: Optional[str] = Form(None),
+    ice_mpg: Optional[float] = Form(None),
+    ice_fuel_tank_gal: Optional[float] = Form(None),
+    ice_label: Optional[str] = Form(None),
 ):
     if not display_name or not display_name.strip():
         from fastapi.responses import JSONResponse
@@ -249,6 +259,9 @@ async def update_vehicle_route(
         battery_capacity_kwh=battery_capacity_kwh,
         vin=vin or None,
         device_id=device_id or None,
+        ice_mpg=ice_mpg,
+        ice_fuel_tank_gal=ice_fuel_tank_gal,
+        ice_label=ice_label or None,
     )
     veh_ctx = await _vehicle_management_context(db)
     response = templates.TemplateResponse(
@@ -1228,20 +1241,83 @@ async def hass_disconnect(request: Request):
     )
 
 
-@router.post("/settings/gas", response_class=HTMLResponse)
-async def update_gas_settings(
+async def _gas_price_history_context(db: AsyncSession) -> dict:
+    """Build context for gas_price_history.html partial."""
+    from datetime import datetime
+
+    gas_prices = await get_all_gas_prices(db)
+    sensor_keys = ["gas_sensor_station_entity_id", "gas_sensor_average_entity_id"]
+    sensor_settings = await get_app_settings_dict(db, sensor_keys)
+    return {
+        "gas_prices": gas_prices,
+        "sensor_settings": sensor_settings,
+        "now": datetime.now(),
+    }
+
+
+@router.get("/settings/gas-prices", response_class=HTMLResponse)
+async def gas_price_history(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    gas_price: float = Form(...),
-    vehicle_mpg: float = Form(...),
 ):
-    await set_app_setting(db, "gas_price_per_gallon", str(gas_price))
-    await set_app_setting(db, "vehicle_mpg", str(vehicle_mpg))
-    settings = await get_app_settings_dict(db, SETTINGS_KEYS)
+    """Return the gas price history partial (lazy-loaded from gas_settings.html)."""
+    ctx = await _gas_price_history_context(db)
     return templates.TemplateResponse(
         request,
-        "settings/partials/gas_settings.html",
-        {"settings": settings, "saved": True},
+        "settings/partials/gas_price_history.html",
+        ctx,
+    )
+
+
+@router.post("/settings/gas-prices", response_class=HTMLResponse)
+async def add_gas_price(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    year: int = Form(...),
+    month: int = Form(...),
+    station_price: Optional[float] = Form(None),
+    average_price: Optional[float] = Form(None),
+):
+    await upsert_gas_price(db, year, month, station_price=station_price, average_price=average_price)
+    ctx = await _gas_price_history_context(db)
+    ctx["saved"] = True
+    return templates.TemplateResponse(
+        request,
+        "settings/partials/gas_price_history.html",
+        ctx,
+    )
+
+
+@router.delete("/settings/gas-prices/{price_id}", response_class=HTMLResponse)
+async def delete_gas_price_route(
+    price_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    await delete_gas_price(db, price_id)
+    ctx = await _gas_price_history_context(db)
+    return templates.TemplateResponse(
+        request,
+        "settings/partials/gas_price_history.html",
+        ctx,
+    )
+
+
+@router.post("/settings/gas-sensors", response_class=HTMLResponse)
+async def save_gas_sensors(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    gas_sensor_station_entity_id: Optional[str] = Form(None),
+    gas_sensor_average_entity_id: Optional[str] = Form(None),
+):
+    await set_app_setting(db, "gas_sensor_station_entity_id", gas_sensor_station_entity_id or "")
+    await set_app_setting(db, "gas_sensor_average_entity_id", gas_sensor_average_entity_id or "")
+    ctx = await _gas_price_history_context(db)
+    ctx["saved"] = True
+    return templates.TemplateResponse(
+        request,
+        "settings/partials/gas_price_history.html",
+        ctx,
     )
 
 
