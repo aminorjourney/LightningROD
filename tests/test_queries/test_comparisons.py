@@ -7,16 +7,33 @@ import pytest
 from datetime import datetime, timedelta, timezone
 
 from db.models.charging_session import EVChargingSession
-from db.models.reference import EVChargingNetwork
+from db.models.reference import EVChargingNetwork, GasPriceHistory
+from db.models.vehicle import EVVehicle
 from web.queries.comparisons import query_gas_comparison, query_network_comparison
-from web.queries.settings import set_app_setting
+from web.queries.costs import compute_session_cost, get_networks_by_name
 
 
 pytestmark = [pytest.mark.query, pytest.mark.db]
 
 
 async def _setup_comparison_data(db):
-    """Create sessions with known energy, cost, and miles for comparison tests."""
+    """Create vehicle, network, gas prices, and sessions with known values."""
+    # Vehicle with ICE comparison fields set
+    vehicle = EVVehicle(
+        device_id="COMP_VIN",
+        display_name="Comparison Vehicle",
+        year=2024,
+        make="Ford",
+        model="Mustang Mach-E",
+        trim="Premium AWD",
+        battery_capacity_kwh=91.0,
+        ice_mpg=25.0,
+        ice_fuel_tank_gal=15.0,
+        ice_label="2024 Ford Explorer 25 MPG",
+    )
+    db.add(vehicle)
+    await db.flush()
+
     net = EVChargingNetwork(
         network_name="Comparison Net",
         cost_per_kwh=0.35,
@@ -26,7 +43,18 @@ async def _setup_comparison_data(db):
     db.add(net)
     await db.flush()
 
-    # 3 sessions with known values
+    # Gas price for June 2025 — station $4.00, average $4.20
+    gas_price = GasPriceHistory(
+        year=2025,
+        month=6,
+        station_price=4.00,
+        average_price=4.20,
+        source="manual",
+    )
+    db.add(gas_price)
+    await db.flush()
+
+    # 3 sessions with known energy, miles, and costs
     sessions = []
     for i, (kwh, miles) in enumerate([(40.0, 120.0), (30.0, 90.0), (50.0, 150.0)]):
         s = EVChargingSession(
@@ -34,7 +62,7 @@ async def _setup_comparison_data(db):
             energy_kwh=kwh,
             miles_added=miles,
             network_id=net.id,
-            location_name="Comparison Net",  # for old-style networks_by_name lookup
+            location_name="Comparison Net",
             session_start_utc=datetime(2025, 6, 1, tzinfo=timezone.utc) + timedelta(days=i),
             is_complete=True,
             source_system="test",
@@ -45,6 +73,7 @@ async def _setup_comparison_data(db):
     await db.flush()
 
     return {
+        "vehicle": vehicle,
         "network": net,
         "sessions": sessions,
         "total_kwh": 120.0,
@@ -56,23 +85,37 @@ async def test_gas_comparison(db_session):
     """Verify gas comparison calculates EV vs gas costs correctly."""
     db = db_session
     data = await _setup_comparison_data(db)
+    vehicle = data["vehicle"]
 
-    # Set gas price and mpg settings (upsert to handle pre-existing seed data)
-    await set_app_setting(db, "gas_price_per_gallon", "4.00")
-    await set_app_setting(db, "vehicle_mpg", "25.0")
-
-    result = await query_gas_comparison(db, time_range="all")
+    result = await query_gas_comparison(db, vehicle=vehicle, time_range="all")
 
     # EV costs: each session = kwh * 0.35 -> 14.00 + 10.50 + 17.50 = 42.00
     assert result["ev_total"] == pytest.approx(42.00, abs=0.01)
     assert result["session_count"] == 3
     assert result["total_miles"] == pytest.approx(data["total_miles"], abs=0.01)
 
-    # Gas costs: 360 miles / 25 mpg * $4.00/gal = 57.60
-    assert result["gas_total"] == pytest.approx(57.60, abs=0.01)
+    # Gas costs using miles-based path: 360 miles / 25 mpg = 14.4 gallons
+    # Station track: 14.4 * $4.00 = $57.60
+    # Average track: 14.4 * $4.20 = $60.48
+    assert result["gas_total_low"] == pytest.approx(57.60, abs=0.01)
+    assert result["gas_total_high"] == pytest.approx(60.48, abs=0.01)
 
-    # Savings: 57.60 - 42.00 = 15.60
-    assert result["savings"] == pytest.approx(15.60, abs=0.01)
+    # Savings: gas - ev
+    assert result["savings_low"] == pytest.approx(57.60 - 42.00, abs=0.01)
+    assert result["savings_high"] == pytest.approx(60.48 - 42.00, abs=0.01)
+    assert result["has_range"] is True
+    assert result["ice_label"] == "2024 Ford Explorer 25 MPG"
+
+
+async def test_gas_comparison_no_vehicle(db_session):
+    """No vehicle -> returns zeros gracefully."""
+    result = await query_gas_comparison(db_session, vehicle=None, time_range="all")
+
+    assert result["ev_total"] == 0.0
+    assert result["gas_total_low"] == 0.0
+    assert result["gas_total_high"] == 0.0
+    assert result["savings_low"] == 0.0
+    assert result["session_count"] == 0
 
 
 async def test_network_comparison(db_session):
@@ -93,10 +136,22 @@ async def test_network_comparison(db_session):
 
 
 async def test_gas_comparison_empty(db_session):
-    """No sessions -> returns zeros gracefully."""
-    result = await query_gas_comparison(db_session, time_range="all")
+    """Vehicle with ICE config but no sessions -> returns zeros."""
+    vehicle = EVVehicle(
+        device_id="EMPTY_VIN",
+        display_name="Empty Vehicle",
+        year=2024,
+        make="Ford",
+        model="Mustang Mach-E",
+        battery_capacity_kwh=91.0,
+        ice_mpg=25.0,
+        ice_fuel_tank_gal=15.0,
+    )
+    db_session.add(vehicle)
+    await db_session.flush()
+
+    result = await query_gas_comparison(db_session, vehicle=vehicle, time_range="all")
 
     assert result["ev_total"] == 0.0
-    assert result["gas_total"] == 0.0
-    assert result["savings"] == 0.0
+    assert result["gas_total_low"] == 0.0
     assert result["session_count"] == 0

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import websockets
+from websockets.asyncio.server import serve, ServerConnection
 
 logger = logging.getLogger("lightningrod.test.ha_sim")
 
@@ -37,12 +38,12 @@ class HASimulator:
         self._host = host
         self._port = port  # 0 = OS-assigned free port
         self._valid_token = valid_token
-        self._server: Optional[websockets.WebSocketServer] = None
+        self._server = None
         self._actual_port: Optional[int] = None
 
         # Event injection queue and subscribed client tracking
         self._events_queue: asyncio.Queue = asyncio.Queue()
-        self._subscribed_clients: list[websockets.WebSocketServerProtocol] = []
+        self._subscribed_clients: list[_SubscribedClient] = []
         self._dispatch_task: Optional[asyncio.Task] = None
 
         # Pre-configured entity states returned by get_states
@@ -76,11 +77,11 @@ class HASimulator:
 
     async def start(self) -> None:
         """Start the WebSocket server and event dispatch loop."""
-        self._server = await websockets.serve(
+        self._server = await serve(
             self._handle_client,
             self._host,
             self._port,
-            ping_interval=None,  # Disable ping for tests
+            ping_interval=None,
             ping_timeout=None,
         )
         # Read the actual port from the server socket
@@ -144,11 +145,7 @@ class HASimulator:
         """Pre-configure entity states returned by get_states."""
         self._entity_states = states
 
-    async def _handle_client(
-        self,
-        ws: websockets.WebSocketServerProtocol,
-        path: str = "/",
-    ) -> None:
+    async def _handle_client(self, ws: ServerConnection) -> None:
         """Handle a single WebSocket client connection with HA protocol."""
         try:
             # Step 1: Send auth_required
@@ -283,7 +280,7 @@ class _SubscribedClient:
 
     __slots__ = ("ws", "subscription_id")
 
-    def __init__(self, ws: websockets.WebSocketServerProtocol, subscription_id: int):
+    def __init__(self, ws: ServerConnection, subscription_id: int):
         self.ws = ws
         self.subscription_id = subscription_id
 
