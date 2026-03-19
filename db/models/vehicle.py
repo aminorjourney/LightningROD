@@ -30,6 +30,12 @@ class EVVehicle(Base):
     vin: Mapped[Optional[str]] = mapped_column(String, unique=True)
     device_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     source_system: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    # ICE comparison fields — configure what gas vehicle this EV replaces
+    ice_mpg: Mapped[Optional[float]] = mapped_column(Numeric)
+    ice_fuel_tank_gal: Mapped[Optional[float]] = mapped_column(Numeric)
+    ice_label: Mapped[Optional[str]] = mapped_column(String)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=text("NOW()")
     )

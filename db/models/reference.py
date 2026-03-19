@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String, Text, text
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -124,6 +124,45 @@ class EVStatistics(Base):
     avg_cost_per_kwh: Mapped[Optional[float]] = mapped_column(Numeric)
     avg_miles_per_kwh: Mapped[Optional[float]] = mapped_column(Numeric)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class GasPriceHistory(Base):
+    """Monthly gas prices with two tracks: station-specific and regional average.
+
+    Each row represents one month's gas prices. The two tracks enable
+    range-based savings calculations (low/high bounds).
+    """
+
+    __tablename__ = "gas_price_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-12
+    station_price: Mapped[Optional[float]] = mapped_column(Numeric)
+    average_price: Mapped[Optional[float]] = mapped_column(Numeric)
+    source: Mapped[Optional[str]] = mapped_column(String(20))  # 'manual' or 'ha_sensor'
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=text("NOW()")
+    )
+
+    __table_args__ = (
+        UniqueConstraint("year", "month", name="uq_gas_price_history_year_month"),
+    )
+
+
+class GasPriceReading(Base):
+    """Raw HA sensor readings for gas prices — staging table for monthly averaging.
+
+    Individual readings are stored as they arrive from Home Assistant sensors.
+    Periodically averaged into GasPriceHistory entries per month.
+    """
+
+    __tablename__ = "gas_price_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, nullable=False)
+    price: Mapped[float] = mapped_column(Numeric, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
 
 
 class AppSettings(Base):
