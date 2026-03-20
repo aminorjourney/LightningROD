@@ -4,7 +4,9 @@ Provides SOC timeline, charge curve, and degradation trend data queries
 with adaptive downsampling, plus Plotly chart builders for each.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -16,7 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.battery_status import EVBatteryStatus
 from db.models.charging_session import EVChargingSession
+from db.models.vehicle_status import EVVehicleStatus
 from web.queries.dashboard import _HOVER_LABEL, _PLOTLY_CONFIG, _wrap_chart
+
+# Module-level cache for reference charge curve JSON data
+_CURVE_CACHE: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # Time filter
@@ -63,9 +69,67 @@ async def query_soc_timeline(
 ) -> list[dict]:
     """Query SOC timeline data with adaptive time-bucket downsampling.
 
+    Uses SQL-level date_trunc downsampling for datasets >10k rows to avoid
+    fetching all rows into Python. Falls back to pandas resampling for
+    smaller datasets.
+
     Returns list of dicts with keys: recorded_at, soc, kw, range.
     Empty list when no data found.
     """
+    time_filter = build_battery_time_filter(time_range)
+
+    # Count rows first to decide downsampling strategy
+    count_stmt = select(func.count()).select_from(EVBatteryStatus).where(
+        EVBatteryStatus.hv_battery_soc.isnot(None)
+    )
+    if time_filter is not None:
+        count_stmt = count_stmt.where(time_filter)
+    if device_id:
+        count_stmt = count_stmt.where(EVBatteryStatus.device_id == device_id)
+    count_result = await db.execute(count_stmt)
+    total_rows = count_result.scalar() or 0
+
+    if total_rows == 0:
+        return []
+
+    # SQL-level downsampling for large datasets
+    if total_rows > 10000:
+        if total_rows > 50000:
+            bucket = "6 hours"
+        elif total_rows > 20000:
+            bucket = "4 hours"
+        else:
+            bucket = "2 hours"
+
+        bucket_col = func.date_trunc(bucket, EVBatteryStatus.recorded_at).label("bucket")
+        stmt = (
+            select(
+                bucket_col,
+                func.avg(EVBatteryStatus.hv_battery_soc).label("soc"),
+                func.avg(EVBatteryStatus.hv_battery_kw).label("kw"),
+                func.max(EVBatteryStatus.hv_battery_range).label("range"),
+            )
+            .where(EVBatteryStatus.hv_battery_soc.isnot(None))
+            .group_by(bucket_col)
+            .order_by(bucket_col)
+        )
+        if time_filter is not None:
+            stmt = stmt.where(time_filter)
+        if device_id:
+            stmt = stmt.where(EVBatteryStatus.device_id == device_id)
+
+        result = await db.execute(stmt)
+        return [
+            {
+                "recorded_at": row.bucket,
+                "soc": float(row.soc) if row.soc is not None else None,
+                "kw": float(row.kw) if row.kw is not None else None,
+                "range": float(row.range) if row.range is not None else None,
+            }
+            for row in result.all()
+        ]
+
+    # Fetch all rows for smaller datasets
     stmt = select(
         EVBatteryStatus.recorded_at,
         EVBatteryStatus.hv_battery_soc,
@@ -73,7 +137,6 @@ async def query_soc_timeline(
         EVBatteryStatus.hv_battery_range,
     ).order_by(EVBatteryStatus.recorded_at)
 
-    time_filter = build_battery_time_filter(time_range)
     if time_filter is not None:
         stmt = stmt.where(time_filter)
     if device_id:
@@ -91,7 +154,7 @@ async def query_soc_timeline(
     if df.empty:
         return []
 
-    # Adaptive downsampling — target ~500-800 points for responsive charts
+    # Adaptive Python-level downsampling for moderate datasets
     if len(df) > 800:
         df = df.set_index("recorded_at")
         if len(df) > 5000:
@@ -258,6 +321,252 @@ async def query_recent_sessions_for_picker(
             "energy_kwh": float(row.energy_kwh) if row.energy_kwh else None,
         }
         for row in result.all()
+    ]
+
+
+def load_reference_charge_curve(vehicle) -> dict | None:
+    """Load reference charge curve JSON for a vehicle.
+
+    Args:
+        vehicle: EVVehicle object (or None).
+
+    Returns:
+        Parsed dict with name, battery_capacity_kwh, max_dc_kw, curve keys,
+        or None if vehicle doesn't match a known preset.
+    """
+    if vehicle is None:
+        return None
+    make = getattr(vehicle, "make", None) or ""
+    model = getattr(vehicle, "model", None) or ""
+    if make.lower() != "ford" or "lightning" not in model.lower():
+        return None
+
+    # Determine variant from trim or battery capacity
+    trim = (getattr(vehicle, "trim", None) or "").lower()
+    cap = getattr(vehicle, "battery_capacity_kwh", None)
+
+    if "extended" in trim or "er" == trim:
+        filename = "f150_lightning_er.json"
+    elif "standard" in trim or "sr" == trim:
+        filename = "f150_lightning_sr.json"
+    elif cap is not None and float(cap) >= 120:
+        filename = "f150_lightning_er.json"
+    else:
+        filename = "f150_lightning_sr.json"
+
+    if filename in _CURVE_CACHE:
+        return _CURVE_CACHE[filename]
+
+    curve_path = Path(__file__).parent.parent.parent / "data" / "charge_curves" / filename
+    if not curve_path.exists():
+        return None
+
+    data = json.loads(curve_path.read_text())
+    _CURVE_CACHE[filename] = data
+    return data
+
+
+async def query_degradation_by_mileage(
+    db: AsyncSession,
+    time_range: str = "all",
+    device_id: Optional[str] = None,
+) -> list[dict]:
+    """Query daily max battery capacity correlated with odometer mileage.
+
+    Joins ev_battery_status with ev_vehicle_status via pd.merge_asof on
+    timestamp proximity (4h tolerance) to correlate capacity with mileage.
+
+    Returns list of dicts: {odometer, max_capacity, date, recorded_at}.
+    Empty list if no valid data after merge.
+    """
+    # Daily max capacity with latest timestamp per day
+    date_col = cast(EVBatteryStatus.recorded_at, Date)
+    cap_stmt = (
+        select(
+            date_col.label("date"),
+            func.max(EVBatteryStatus.hv_battery_capacity).label("max_capacity"),
+            func.max(EVBatteryStatus.recorded_at).label("latest_ts"),
+        )
+        .where(EVBatteryStatus.hv_battery_capacity.isnot(None))
+        .group_by(date_col)
+        .order_by(date_col)
+    )
+
+    time_filter = build_battery_time_filter(time_range)
+    if time_filter is not None:
+        cap_stmt = cap_stmt.where(time_filter)
+    if device_id:
+        cap_stmt = cap_stmt.where(EVBatteryStatus.device_id == device_id)
+
+    cap_result = await db.execute(cap_stmt)
+    cap_rows = cap_result.all()
+
+    if not cap_rows:
+        return []
+
+    # Odometer readings
+    odo_stmt = (
+        select(EVVehicleStatus.recorded_at, EVVehicleStatus.odometer)
+        .where(EVVehicleStatus.odometer.isnot(None))
+        .order_by(EVVehicleStatus.recorded_at)
+    )
+    if device_id:
+        odo_stmt = odo_stmt.where(EVVehicleStatus.device_id == device_id)
+
+    odo_result = await db.execute(odo_stmt)
+    odo_rows = odo_result.all()
+
+    if not odo_rows:
+        return []
+
+    # Build DataFrames and merge on timestamp proximity
+    cap_df = pd.DataFrame(
+        [
+            {
+                "date": r.date,
+                "max_capacity": float(r.max_capacity),
+                "latest_ts": r.latest_ts,
+            }
+            for r in cap_rows
+        ]
+    )
+    odo_df = pd.DataFrame(
+        [
+            {"recorded_at": r.recorded_at, "odometer": float(r.odometer)}
+            for r in odo_rows
+        ]
+    )
+
+    # Ensure timezone-aware timestamps for merge
+    cap_df["latest_ts"] = pd.to_datetime(cap_df["latest_ts"], utc=True)
+    odo_df["recorded_at"] = pd.to_datetime(odo_df["recorded_at"], utc=True)
+
+    cap_df = cap_df.sort_values("latest_ts")
+    odo_df = odo_df.sort_values("recorded_at")
+
+    merged = pd.merge_asof(
+        cap_df,
+        odo_df,
+        left_on="latest_ts",
+        right_on="recorded_at",
+        tolerance=pd.Timedelta("4h"),
+        direction="nearest",
+    )
+
+    merged = merged.dropna(subset=["odometer"])
+
+    if merged.empty:
+        return []
+
+    return [
+        {
+            "odometer": float(row["odometer"]),
+            "max_capacity": float(row["max_capacity"]),
+            "date": row["date"],
+            "recorded_at": row["latest_ts"],
+        }
+        for _, row in merged.iterrows()
+    ]
+
+
+async def query_lv_battery_timeline(
+    db: AsyncSession,
+    time_range: str = "7d",
+    device_id: Optional[str] = None,
+) -> list[dict]:
+    """Query 12v battery voltage and level timeline with adaptive downsampling.
+
+    Returns list of dicts: {recorded_at, voltage, level}.
+    """
+    stmt = (
+        select(
+            EVBatteryStatus.recorded_at,
+            EVBatteryStatus.lv_battery_voltage,
+            EVBatteryStatus.lv_battery_level,
+        )
+        .where(EVBatteryStatus.lv_battery_voltage.isnot(None))
+        .order_by(EVBatteryStatus.recorded_at)
+    )
+
+    time_filter = build_battery_time_filter(time_range)
+    if time_filter is not None:
+        stmt = stmt.where(time_filter)
+    if device_id:
+        stmt = stmt.where(EVBatteryStatus.device_id == device_id)
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows, columns=["recorded_at", "voltage", "level"])
+
+    # Adaptive downsampling matching SOC timeline thresholds
+    if len(df) > 800:
+        df = df.set_index("recorded_at")
+        if len(df) > 5000:
+            bucket = "2h"
+        elif len(df) > 2000:
+            bucket = "1h"
+        else:
+            bucket = "30min"
+        df = (
+            df.resample(bucket)
+            .agg({"voltage": "mean", "level": "mean"})
+            .dropna(subset=["voltage"])
+            .reset_index()
+        )
+
+    return [
+        {
+            "recorded_at": row["recorded_at"],
+            "voltage": float(row["voltage"]) if pd.notna(row["voltage"]) else None,
+            "level": float(row["level"]) if pd.notna(row["level"]) else None,
+        }
+        for _, row in df.iterrows()
+    ]
+
+
+async def query_average_charge_curve(
+    db: AsyncSession,
+    device_id: Optional[str] = None,
+) -> list[dict]:
+    """Compute average kW per 2% SOC bucket across all charging sessions.
+
+    Charging is detected as hv_battery_kw < -0.5 (negative = power into battery).
+    Returns list of dicts: {soc, kw} sorted by soc ascending.
+    """
+    stmt = select(
+        EVBatteryStatus.hv_battery_soc,
+        EVBatteryStatus.hv_battery_kw,
+    ).where(
+        EVBatteryStatus.hv_battery_soc.isnot(None),
+        EVBatteryStatus.hv_battery_kw < -0.5,
+    )
+
+    if device_id:
+        stmt = stmt.where(EVBatteryStatus.device_id == device_id)
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows, columns=["soc", "kw"])
+    df["soc"] = df["soc"].astype(float)
+    df["kw"] = df["kw"].astype(float).abs()
+
+    # Create 2% SOC buckets
+    df["soc_bucket"] = (df["soc"] / 2).round() * 2
+
+    avg_by_bucket = df.groupby("soc_bucket")["kw"].mean().reset_index()
+    avg_by_bucket = avg_by_bucket.sort_values("soc_bucket")
+
+    return [
+        {"soc": float(row["soc_bucket"]), "kw": float(row["kw"])}
+        for _, row in avg_by_bucket.iterrows()
     ]
 
 
