@@ -1,49 +1,79 @@
 <!-- Summary Cards -->
 <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
 
-    <!-- Battery Health -->
+    <!-- Est. Degradation (radial gauge) -->
     <div class="card bg-base-200">
-        <div class="card-body">
-            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Battery Health</p>
-            {% if summary.battery_health_pct is not none %}
-                <p class="text-3xl font-bold">{{ "%.0f"|format(summary.battery_health_pct) }}<span class="text-xl font-normal text-base-content/60">%</span></p>
-                <p class="text-sm text-base-content/60 mt-1">{{ "%.1f"|format(summary.battery_health_capacity) }} / {{ "%.1f"|format(summary.rated_capacity) }} kWh</p>
+        <div class="card-body items-center text-center">
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-2">Est. Degradation</p>
+            {% if summary.health_pct is not none %}
+                <div class="radial-progress text-success"
+                     style="--value:{{ summary.health_pct|round(0)|int }}; --size:5rem; --thickness:4px;"
+                     role="progressbar">
+                    {{ "%.0f"|format(summary.health_pct) }}%
+                </div>
+                <p class="text-xs text-base-content/40 mt-1">Estimated from capacity data</p>
             {% else %}
-                <p class="text-2xl font-semibold text-base-content/30">No data</p>
-                <p class="text-xs text-base-content/30 mt-1">Requires battery status data</p>
+                <p class="text-2xl font-semibold text-base-content/30">--</p>
+                <p class="text-xs text-base-content/30 mt-1">Requires capacity data</p>
             {% endif %}
         </div>
     </div>
 
-    <!-- Current SOC -->
+    <!-- Usable Capacity -->
     <div class="card bg-base-200">
         <div class="card-body">
-            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Current SOC</p>
-            {% if summary.current_soc is not none %}
-                <p class="text-3xl font-bold">{{ "%.0f"|format(summary.current_soc) }}<span class="text-xl font-normal text-base-content/60">%</span></p>
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Usable Capacity</p>
+            {% if summary.current_capacity is not none %}
+                <p class="text-2xl font-bold">{{ "%.1f"|format(summary.current_capacity) }} <span class="text-base font-normal text-base-content/60">kWh</span></p>
+                <p class="text-sm text-base-content/60 mt-1">
+                    vs {{ "%.1f"|format(summary.rated_capacity) }} kWh new
+                    {% if summary.capacity_delta is not none %}
+                        <span class="text-error">({{ "%.1f"|format(summary.capacity_delta) }} kWh)</span>
+                    {% endif %}
+                </p>
             {% else %}
-                <p class="text-2xl font-semibold text-base-content/30">No data</p>
+                <p class="text-2xl font-semibold text-base-content/30">--</p>
+                <p class="text-xs text-base-content/30 mt-1">Requires capacity data</p>
             {% endif %}
         </div>
     </div>
 
-    <!-- Estimated Range -->
+    <!-- Range -->
     <div class="card bg-base-200">
         <div class="card-body">
-            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Estimated Range</p>
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Range</p>
             {% if summary.latest_range is not none %}
-                <p class="text-3xl font-bold">{{ "%.0f"|format(summary.latest_range) }} <span class="text-xl font-normal text-base-content/60">mi</span></p>
+                <p class="text-2xl font-bold">{{ "%.0f"|format(summary.latest_range) }} <span class="text-base font-normal text-base-content/60">mi</span></p>
+                {% if summary.rated_range is not none %}
+                    <p class="text-sm text-base-content/60 mt-1">
+                        vs {{ "%.0f"|format(summary.rated_range) }} mi new
+                        {% if summary.range_delta is not none %}
+                            <span class="text-error">({{ "%.0f"|format(summary.range_delta) }} mi)</span>
+                        {% endif %}
+                    </p>
+                {% else %}
+                    <p class="text-sm text-base-content/60 mt-1">Latest recorded range</p>
+                {% endif %}
             {% else %}
-                <p class="text-2xl font-semibold text-base-content/30">No data</p>
+                <p class="text-2xl font-semibold text-base-content/30">--</p>
+                <p class="text-xs text-base-content/30 mt-1">Requires range data</p>
             {% endif %}
         </div>
     </div>
 
-    <!-- Total Sessions -->
+    <!-- 12V Battery -->
     <div class="card bg-base-200">
         <div class="card-body">
-            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">Total Sessions</p>
-            <p class="text-3xl font-bold">{{ summary.total_sessions }}</p>
+            <p class="text-xs uppercase tracking-wide text-base-content/40 mb-1">12V Battery</p>
+            {% if summary.lv_voltage is not none %}
+                <p class="text-2xl font-bold">{{ "%.1f"|format(summary.lv_voltage) }} <span class="text-base font-normal text-base-content/60">V</span></p>
+                {% if summary.lv_level is not none %}
+                    <p class="text-sm text-base-content/60 mt-1">Level: {{ "%.0f"|format(summary.lv_level) }}%</p>
+                {% endif %}
+            {% else %}
+                <p class="text-2xl font-semibold text-base-content/30">--</p>
+                <p class="text-xs text-base-content/30 mt-1">No 12V data available</p>
+            {% endif %}
         </div>
     </div>
 
@@ -93,17 +123,32 @@
         {% else %}
             <p class="text-base-content/40 text-sm py-8 text-center">Select a session above to view its charge curve.</p>
         {% endif %}
+        {% if ref_curve_name %}
+            <p class="text-xs text-base-content/40 mt-1">Reference: {{ ref_curve_name }}</p>
+        {% endif %}
     </div>
 </div>
 
-<!-- Degradation Trend -->
+<!-- Degradation Trend (mileage-based) -->
 <div class="card bg-base-200 mb-4">
     <div class="card-body">
-        <h3 class="card-title text-sm font-medium text-base-content/60 mb-3">Battery Degradation</h3>
+        <h3 class="card-title text-sm font-medium text-base-content/60 mb-3">Battery Capacity by Mileage</h3>
         {% if degradation_chart %}
             {{ degradation_chart | safe }}
         {% else %}
-            <p class="text-base-content/40 text-sm py-8 text-center">No degradation data available for this time range.</p>
+            <p class="text-base-content/40 text-sm py-8 text-center">No capacity or odometer data available for this time range.</p>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 12V Battery Voltage Trend -->
+<div class="card bg-base-200 mb-4">
+    <div class="card-body">
+        <h3 class="card-title text-sm font-medium text-base-content/60 mb-3">12V Battery Voltage</h3>
+        {% if lv_chart %}
+            {{ lv_chart | safe }}
+        {% else %}
+            <p class="text-base-content/40 text-sm py-8 text-center">No 12V battery data available for this time range.</p>
         {% endif %}
     </div>
 </div>
