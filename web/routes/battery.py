@@ -34,6 +34,7 @@ async def battery(
     db: AsyncSession = Depends(get_db),
     range: Optional[str] = "7d",
     session: Optional[int] = None,
+    section: Optional[str] = None,
     hx_request: Annotated[Optional[str], Header()] = None,
 ):
     time_range = range or "7d"
@@ -41,16 +42,43 @@ async def battery(
     # Vehicle scoping
     active_device_id = await get_active_device_id(db)
     active_vehicle = await get_active_vehicle(db)
-    all_vehicles = await get_all_vehicles(db)
 
     # Rated capacity from vehicle, fallback 75.0 kWh
     rated_capacity = 75.0
     if active_vehicle and active_vehicle.battery_capacity_kwh:
         rated_capacity = float(active_vehicle.battery_capacity_kwh)
 
-    # Load reference charge curve for this vehicle
+    # Section-specific partial rendering for lazy loading
+    if section == "degradation":
+        degradation_data = await query_degradation_by_mileage(db, time_range=time_range, device_id=active_device_id)
+        chart = build_degradation_chart(degradation_data, rated_capacity)
+        if chart:
+            return HTMLResponse(chart)
+        return HTMLResponse('<p class="text-base-content/40 text-sm py-8 text-center">No capacity or odometer data available.</p>')
+
+    if section == "charge_curve":
+        ref_curve_data = load_reference_charge_curve(active_vehicle)
+        ref_curve = ref_curve_data["curve"] if ref_curve_data else None
+        avg_curve = await query_average_charge_curve(db, device_id=active_device_id)
+        if session:
+            curve_data = await query_charge_curve(db, session_id=session)
+            chart = build_charge_curve_chart(curve_data, ref_curve=ref_curve, avg_curve=avg_curve)
+            if chart:
+                return HTMLResponse(chart)
+        return HTMLResponse('<p class="text-base-content/40 text-sm py-8 text-center">Select a session to view its charge curve.</p>')
+
+    if section == "lv_battery":
+        lv_data = await query_lv_battery_timeline(db, time_range=time_range, device_id=active_device_id)
+        chart = build_lv_battery_chart(lv_data)
+        if chart:
+            return HTMLResponse(chart)
+        return HTMLResponse('<p class="text-base-content/40 text-sm py-8 text-center">No 12V battery data available.</p>')
+
+    # Full page or HTMX filter change: compute only SOC timeline + summary cards
+    all_vehicles = await get_all_vehicles(db)
+
+    # Load reference charge curve name for display
     ref_curve_data = load_reference_charge_curve(active_vehicle)
-    ref_curve = ref_curve_data["curve"] if ref_curve_data else None
 
     # 1. SOC timeline
     soc_data = await query_soc_timeline(db, time_range=time_range, device_id=active_device_id)
@@ -67,23 +95,9 @@ async def battery(
                 "start": s["session_start_utc"].isoformat() if hasattr(s["session_start_utc"], "isoformat") else str(s["session_start_utc"]),
             })
 
-    # 2. Degradation (mileage-based)
-    degradation_data = await query_degradation_by_mileage(db, time_range=time_range, device_id=active_device_id)
-    degradation_chart = build_degradation_chart(degradation_data, rated_capacity)
-
-    # 3. Charge curve with reference and average
-    avg_curve = await query_average_charge_curve(db, device_id=active_device_id)
-    charge_curve_chart = ""
     active_session = session
-    if session:
-        curve_data = await query_charge_curve(db, session_id=session)
-        charge_curve_chart = build_charge_curve_chart(curve_data, ref_curve=ref_curve, avg_curve=avg_curve)
 
-    # 4. 12v battery timeline
-    lv_data = await query_lv_battery_timeline(db, time_range=time_range, device_id=active_device_id)
-    lv_chart = build_lv_battery_chart(lv_data)
-
-    # 5. Summary card values (health-focused)
+    # Summary card values (health-focused)
     summary = {
         "health_pct": None,
         "current_capacity": None,
@@ -145,11 +159,13 @@ async def battery(
             summary["lv_voltage"] = float(lv_latest.lv_battery_voltage)
             summary["lv_level"] = float(lv_latest.lv_battery_level) if lv_latest.lv_battery_level else None
 
+    # Degradation, charge curve, and 12v charts are NOT computed here --
+    # they are lazy-loaded via HTMX hx-trigger="revealed"
     context = {
         "soc_chart": soc_chart,
-        "degradation_chart": degradation_chart,
-        "charge_curve_chart": charge_curve_chart,
-        "lv_chart": lv_chart,
+        "degradation_chart": None,
+        "charge_curve_chart": None,
+        "lv_chart": None,
         "ref_curve_name": ref_curve_data["name"] if ref_curve_data else None,
         "summary": summary,
         "sessions_list": recent_sessions,
