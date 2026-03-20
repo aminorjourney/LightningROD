@@ -3,19 +3,22 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.battery_status import EVBatteryStatus
-from db.models.charging_session import EVChargingSession
 from web.dependencies import get_db
 from web.queries.battery import (
     build_charge_curve_chart,
     build_degradation_chart,
+    build_lv_battery_chart,
     build_soc_timeline_chart,
     detect_charging_regions,
+    load_reference_charge_curve,
+    query_average_charge_curve,
     query_charge_curve,
-    query_degradation_data,
+    query_degradation_by_mileage,
+    query_lv_battery_timeline,
     query_recent_sessions_for_picker,
     query_soc_timeline,
 )
@@ -45,6 +48,10 @@ async def battery(
     if active_vehicle and active_vehicle.battery_capacity_kwh:
         rated_capacity = float(active_vehicle.battery_capacity_kwh)
 
+    # Load reference charge curve for this vehicle
+    ref_curve_data = load_reference_charge_curve(active_vehicle)
+    ref_curve = ref_curve_data["curve"] if ref_curve_data else None
+
     # 1. SOC timeline
     soc_data = await query_soc_timeline(db, time_range=time_range, device_id=active_device_id)
     charging_regions = detect_charging_regions(soc_data)
@@ -60,34 +67,45 @@ async def battery(
                 "start": s["session_start_utc"].isoformat() if hasattr(s["session_start_utc"], "isoformat") else str(s["session_start_utc"]),
             })
 
-    # 2. Degradation
-    degradation_data = await query_degradation_data(db, time_range=time_range, device_id=active_device_id)
+    # 2. Degradation (mileage-based)
+    degradation_data = await query_degradation_by_mileage(db, time_range=time_range, device_id=active_device_id)
     degradation_chart = build_degradation_chart(degradation_data, rated_capacity)
 
-    # 3. Charge curve
+    # 3. Charge curve with reference and average
+    avg_curve = await query_average_charge_curve(db, device_id=active_device_id)
     charge_curve_chart = ""
     active_session = session
     if session:
         curve_data = await query_charge_curve(db, session_id=session)
-        charge_curve_chart = build_charge_curve_chart(curve_data)
+        charge_curve_chart = build_charge_curve_chart(curve_data, ref_curve=ref_curve, avg_curve=avg_curve)
 
-    # 4. Summary card values
+    # 4. 12v battery timeline
+    lv_data = await query_lv_battery_timeline(db, time_range=time_range, device_id=active_device_id)
+    lv_chart = build_lv_battery_chart(lv_data)
+
+    # 5. Summary card values (health-focused)
     summary = {
-        "battery_health_pct": None,
-        "battery_health_capacity": None,
+        "health_pct": None,
+        "current_capacity": None,
         "rated_capacity": rated_capacity,
-        "current_soc": None,
+        "capacity_delta": None,
+        "rated_range": None,
         "latest_range": None,
-        "total_sessions": 0,
+        "range_delta": None,
+        "lv_voltage": None,
+        "lv_level": None,
     }
 
-    # Latest SOC from battery_status
+    # Latest battery status for summary
     latest_stmt = (
         select(
-            EVBatteryStatus.hv_battery_soc,
-            EVBatteryStatus.hv_battery_range,
             EVBatteryStatus.hv_battery_capacity,
+            EVBatteryStatus.hv_battery_range,
+            EVBatteryStatus.hv_battery_max_range,
+            EVBatteryStatus.lv_battery_voltage,
+            EVBatteryStatus.lv_battery_level,
         )
+        .where(EVBatteryStatus.hv_battery_capacity.isnot(None))
         .order_by(EVBatteryStatus.recorded_at.desc())
         .limit(1)
     )
@@ -96,26 +114,43 @@ async def battery(
     latest_result = await db.execute(latest_stmt)
     latest = latest_result.first()
     if latest:
-        if latest.hv_battery_soc is not None:
-            summary["current_soc"] = float(latest.hv_battery_soc)
+        cap = float(latest.hv_battery_capacity)
+        summary["current_capacity"] = cap
+        summary["health_pct"] = (cap / rated_capacity) * 100
+        summary["capacity_delta"] = cap - rated_capacity
         if latest.hv_battery_range is not None:
             summary["latest_range"] = float(latest.hv_battery_range)
-        if latest.hv_battery_capacity is not None:
-            cap = float(latest.hv_battery_capacity)
-            summary["battery_health_capacity"] = cap
-            summary["battery_health_pct"] = (cap / rated_capacity) * 100
+        if latest.hv_battery_max_range is not None:
+            summary["rated_range"] = float(latest.hv_battery_max_range)
+        if summary["latest_range"] is not None and summary["rated_range"] is not None:
+            summary["range_delta"] = summary["latest_range"] - summary["rated_range"]
+        if latest.lv_battery_voltage is not None:
+            summary["lv_voltage"] = float(latest.lv_battery_voltage)
+        if latest.lv_battery_level is not None:
+            summary["lv_level"] = float(latest.lv_battery_level)
 
-    # Total session count
-    count_stmt = select(func.count(EVChargingSession.id))
-    if active_device_id:
-        count_stmt = count_stmt.where(EVChargingSession.device_id == active_device_id)
-    count_result = await db.execute(count_stmt)
-    summary["total_sessions"] = count_result.scalar() or 0
+    # Fallback: separate query for 12v data if main query didn't have it
+    if summary["lv_voltage"] is None:
+        lv_stmt = (
+            select(EVBatteryStatus.lv_battery_voltage, EVBatteryStatus.lv_battery_level)
+            .where(EVBatteryStatus.lv_battery_voltage.isnot(None))
+            .order_by(EVBatteryStatus.recorded_at.desc())
+            .limit(1)
+        )
+        if active_device_id:
+            lv_stmt = lv_stmt.where(EVBatteryStatus.device_id == active_device_id)
+        lv_result = await db.execute(lv_stmt)
+        lv_latest = lv_result.first()
+        if lv_latest:
+            summary["lv_voltage"] = float(lv_latest.lv_battery_voltage)
+            summary["lv_level"] = float(lv_latest.lv_battery_level) if lv_latest.lv_battery_level else None
 
     context = {
         "soc_chart": soc_chart,
         "degradation_chart": degradation_chart,
         "charge_curve_chart": charge_curve_chart,
+        "lv_chart": lv_chart,
+        "ref_curve_name": ref_curve_data["name"] if ref_curve_data else None,
         "summary": summary,
         "sessions_list": recent_sessions,
         "session_time_windows": session_time_windows,
