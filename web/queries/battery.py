@@ -225,6 +225,7 @@ async def query_charge_curve(
             select(
                 EVBatteryStatus.hv_battery_soc,
                 EVBatteryStatus.hv_battery_kw,
+                EVBatteryStatus.hv_battery_temperature,
                 EVBatteryStatus.recorded_at,
             )
             .where(
@@ -240,6 +241,7 @@ async def query_charge_curve(
             {
                 "soc": float(r.hv_battery_soc),
                 "kw": float(r.hv_battery_kw or 0),
+                "temp": float(r.hv_battery_temperature) if r.hv_battery_temperature is not None else None,
                 "timestamp": r.recorded_at,
             }
             for r in result.all()
@@ -624,20 +626,26 @@ def build_soc_timeline_chart(
         )
     )
 
-    # Color-coded charging regions as vertical rectangles
+    # Color-coded charging regions as vertical rectangles (brighter fill, no per-region text)
     for start_idx, end_idx in charging_regions:
         if start_idx < len(timestamps) and end_idx < len(timestamps):
             fig.add_vrect(
                 x0=timestamps[start_idx],
                 x1=timestamps[end_idx],
-                fillcolor="rgba(74, 222, 128, 0.15)",
+                fillcolor="rgba(74, 222, 128, 0.25)",
                 layer="below",
                 line_width=0,
-                annotation_text="Charging",
-                annotation_position="top left",
-                annotation_font_size=10,
-                annotation_font_color="rgba(74, 222, 128, 0.6)",
             )
+
+    # Single legend entry for charging regions
+    if charging_regions:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode="markers",
+            name="Charging",
+            marker=dict(color="rgba(74, 222, 128, 0.5)", size=10, symbol="square"),
+            showlegend=True,
+        ))
 
     fig.update_layout(
         height=350,
@@ -647,123 +655,6 @@ def build_soc_timeline_chart(
         margin=dict(l=20, r=20, t=20, b=20),
         xaxis=dict(title=""),
         yaxis=dict(title="SOC %", range=[0, 100]),
-        showlegend=False,
-        hovermode="x unified",
-        hoverlabel=_HOVER_LABEL,
-    )
-
-    return _wrap_chart(
-        fig.to_html(full_html=False, include_plotlyjs=False, config=_PLOTLY_CONFIG)
-    )
-
-
-def build_charge_curve_chart(data: dict) -> str:
-    """Build charge curve chart (dual-axis: SOC% + kW vs time).
-
-    Accepts the dict from query_charge_curve. Uses detailed data if >= 3 points,
-    otherwise falls back to session-level start/end SOC.
-    Returns HTML string. Empty string if no data at all.
-    """
-    if not data or not data.get("session"):
-        return ""
-
-    detailed = data.get("detailed", [])
-    fallback = data.get("fallback", {})
-
-    pio.templates.default = "plotly_dark"
-
-    if detailed and len(detailed) >= 3:
-        # Detailed dual-axis chart
-        from plotly.subplots import make_subplots
-
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-        timestamps = [d["timestamp"] for d in detailed]
-        soc_vals = [d["soc"] for d in detailed]
-        kw_vals = [d["kw"] for d in detailed]
-
-        # SOC% on primary y-axis
-        fig.add_trace(
-            go.Scatter(
-                x=timestamps,
-                y=soc_vals,
-                mode="lines+markers",
-                name="SOC %",
-                line=dict(color="#47A8E5", width=2),
-                marker=dict(size=5),
-                hovertemplate="<b>%{x|%H:%M}</b><br>SOC: %{y:.1f}%<extra></extra>",
-            ),
-            secondary_y=False,
-        )
-
-        # kW on secondary y-axis
-        fig.add_trace(
-            go.Scatter(
-                x=timestamps,
-                y=kw_vals,
-                mode="lines",
-                name="Power (kW)",
-                line=dict(color="#f97316", width=1.5),
-                fill="tozeroy",
-                fillcolor="rgba(249, 115, 22, 0.1)",
-                hovertemplate="<b>%{x|%H:%M}</b><br>Power: %{y:.1f} kW<extra></extra>",
-            ),
-            secondary_y=True,
-        )
-
-        fig.update_yaxes(title_text="SOC %", range=[0, 100], secondary_y=False)
-        fig.update_yaxes(title_text="kW", secondary_y=True, showgrid=False)
-
-    elif fallback and (fallback.get("start_soc") is not None or fallback.get("end_soc") is not None):
-        # Fallback: simple two-point chart
-        fig = go.Figure()
-
-        start_soc = fallback.get("start_soc") or 0
-        end_soc = fallback.get("end_soc") or 0
-        x_labels = ["Start", "End"]
-
-        fig.add_trace(
-            go.Scatter(
-                x=x_labels,
-                y=[start_soc, end_soc],
-                mode="lines+markers+text",
-                name="SOC %",
-                line=dict(color="#47A8E5", width=3),
-                marker=dict(size=10),
-                text=[f"{start_soc:.0f}%", f"{end_soc:.0f}%"],
-                textposition="top center",
-                textfont=dict(color="#e5e7eb"),
-                hoverinfo="skip",
-            )
-        )
-
-        # Annotate power metrics
-        annotations = []
-        if fallback.get("charging_kw"):
-            annotations.append(f"Avg: {fallback['charging_kw']:.1f} kW")
-        if fallback.get("max_power"):
-            annotations.append(f"Max: {fallback['max_power']:.1f} kW")
-        if annotations:
-            fig.add_annotation(
-                x=0.5,
-                y=0.95,
-                xref="paper",
-                yref="paper",
-                text=" | ".join(annotations),
-                showarrow=False,
-                font=dict(color="#9ca3af", size=12),
-            )
-
-        fig.update_layout(yaxis=dict(title="SOC %", range=[0, 100]))
-    else:
-        return ""
-
-    fig.update_layout(
-        height=350,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#e5e7eb",
-        margin=dict(l=20, r=20, t=30, b=20),
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
@@ -775,10 +666,151 @@ def build_charge_curve_chart(data: dict) -> str:
     )
 
 
-def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
-    """Build battery degradation trend chart with reference line and projection.
+def build_charge_curve_chart(
+    data: dict,
+    ref_curve: list[dict] | None = None,
+    avg_curve: list[dict] | None = None,
+) -> str:
+    """Build charge curve chart with SOC% on X-axis, kW on Y-axis (industry standard).
 
-    Y-axis: percentage of rated capacity. Includes linear trend with 90-day projection.
+    Displays up to 3 lines: reference curve (dashed gray), average curve (yellow),
+    and selected session (blue). Optional temperature trace hidden by default.
+
+    Args:
+        data: Dict from query_charge_curve with detailed, fallback, session keys.
+        ref_curve: Reference charge curve points [{soc, kw}, ...] from JSON.
+        avg_curve: Average charge curve points [{soc, kw}, ...] from query.
+
+    Returns HTML string. Empty string if no data at all.
+    """
+    if not data or not data.get("session"):
+        return ""
+
+    detailed = data.get("detailed", [])
+    fallback = data.get("fallback", {})
+
+    pio.templates.default = "plotly_dark"
+    fig = go.Figure()
+
+    has_data = False
+
+    # Reference curve line (dashed gray)
+    if ref_curve:
+        fig.add_trace(
+            go.Scatter(
+                x=[p["soc"] for p in ref_curve],
+                y=[p["kw"] for p in ref_curve],
+                mode="lines",
+                name="Reference",
+                line=dict(color="#9ca3af", width=2, dash="dash"),
+            )
+        )
+        has_data = True
+
+    # Average curve line (yellow)
+    if avg_curve and len(avg_curve) >= 3:
+        fig.add_trace(
+            go.Scatter(
+                x=[r["soc"] for r in avg_curve],
+                y=[r["kw"] for r in avg_curve],
+                mode="lines",
+                name="Average",
+                line=dict(color="#facc15", width=2),
+            )
+        )
+        has_data = True
+
+    # Selected session line (blue) -- flipped: SOC on X, abs(kW) on Y
+    if detailed and len(detailed) >= 3:
+        soc_vals = [d["soc"] for d in detailed]
+        kw_vals = [abs(d["kw"]) for d in detailed]
+        temp_vals = [d.get("temp") for d in detailed]
+
+        fig.add_trace(
+            go.Scatter(
+                x=soc_vals,
+                y=kw_vals,
+                mode="lines+markers",
+                name="This Session",
+                line=dict(color="#47A8E5", width=2),
+                marker=dict(size=4),
+            )
+        )
+        has_data = True
+
+        # Temperature toggle trace (hidden by default, user toggles via legend)
+        has_temp = any(t is not None for t in temp_vals)
+        if has_temp:
+            fig.add_trace(
+                go.Scatter(
+                    x=soc_vals,
+                    y=temp_vals,
+                    mode="lines",
+                    name="Battery Temp (F)",
+                    line=dict(color="#ef4444", width=1.5, dash="dot"),
+                    yaxis="y2",
+                    visible="legendonly",
+                )
+            )
+
+    elif fallback and (fallback.get("start_soc") is not None or fallback.get("end_soc") is not None):
+        # Fallback: two-point estimate with SOC on X
+        start_soc = fallback.get("start_soc") or 0
+        end_soc = fallback.get("end_soc") or 0
+        est_kw = fallback.get("charging_kw") or fallback.get("max_power") or 0
+        est_kw = abs(est_kw)
+
+        fig.add_trace(
+            go.Scatter(
+                x=[start_soc, end_soc],
+                y=[est_kw, est_kw],
+                mode="lines+markers+text",
+                name="This Session",
+                line=dict(color="#47A8E5", width=3),
+                marker=dict(size=10),
+                text=[f"{start_soc:.0f}%", f"{end_soc:.0f}%"],
+                textposition="top center",
+                textfont=dict(color="#e5e7eb"),
+            )
+        )
+        has_data = True
+
+    if not has_data:
+        return ""
+
+    layout_kwargs = dict(
+        height=350,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e5e7eb",
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis=dict(title="SOC %", range=[0, 100]),
+        yaxis=dict(title="Charging Power (kW)"),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+        hoverlabel=_HOVER_LABEL,
+    )
+
+    # Add secondary Y-axis for temperature if temp trace exists
+    has_temp = any(t.name == "Battery Temp (F)" for t in fig.data if hasattr(t, "name"))
+    if has_temp:
+        layout_kwargs["yaxis2"] = dict(
+            title="Temp (F)", overlaying="y", side="right", showgrid=False
+        )
+
+    fig.update_layout(**layout_kwargs)
+
+    return _wrap_chart(
+        fig.to_html(full_html=False, include_plotlyjs=False, config=_PLOTLY_CONFIG)
+    )
+
+
+def _build_degradation_chart_date_based(data: list[dict], rated_capacity_kwh: float) -> str:
+    """Build date-based battery degradation trend chart (fallback).
+
+    Used when no odometer data is available. Y-axis: percentage of rated capacity.
+    Includes linear trend with 90-day projection.
     Returns HTML string. Empty string if no data.
     """
     if not data or rated_capacity_kwh <= 0:
@@ -791,7 +823,6 @@ def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
     capacities = [row["max_capacity"] for row in data]
     pct_values = [(c / rated_capacity_kwh) * 100 for c in capacities]
 
-    # Scatter points for daily max capacity
     hover_texts = []
     for i, row in enumerate(data):
         d = row["date"]
@@ -814,7 +845,6 @@ def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
         )
     )
 
-    # 100% reference line
     fig.add_hline(
         y=100,
         line_dash="dash",
@@ -824,20 +854,15 @@ def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
         annotation_font_color="#9ca3af",
     )
 
-    # Linear trend + forward projection (90 days)
     if len(data) >= 2:
-        # Convert dates to numeric (days since first reading)
         first_date = dates[0]
         x_numeric = np.array(
             [(d - first_date).days if hasattr(d, "__sub__") else 0 for d in dates],
             dtype=float,
         )
         y_pct = np.array(pct_values, dtype=float)
-
         coeffs = np.polyfit(x_numeric, y_pct, 1)
         slope, intercept = coeffs
-
-        # Trend line over data range
         trend_y = slope * x_numeric + intercept
 
         fig.add_trace(
@@ -851,18 +876,12 @@ def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
             )
         )
 
-        # Project forward ~90 days
         last_day = x_numeric[-1]
         proj_days = np.arange(last_day, last_day + 91, 1)
         proj_y = slope * proj_days + intercept
 
-        # Build projected dates
-        from datetime import date as date_type
-
         if hasattr(first_date, "year"):
-            proj_dates = [
-                first_date + timedelta(days=int(d)) for d in proj_days
-            ]
+            proj_dates = [first_date + timedelta(days=int(d)) for d in proj_days]
         else:
             proj_dates = list(proj_days)
 
@@ -897,8 +916,196 @@ def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
     )
 
 
-def build_mini_charge_curve(session) -> str:
-    """Build compact charge curve for session drawer (no axes, minimal chrome).
+def build_degradation_chart(data: list[dict], rated_capacity_kwh: float) -> str:
+    """Build mileage-based battery degradation chart with trend line and date annotations.
+
+    X-axis: odometer (miles), Y-axis: battery capacity (kWh raw).
+    Falls back to date-based chart if no odometer data available.
+    Returns HTML string. Empty string if no data.
+    """
+    if not data or rated_capacity_kwh <= 0:
+        return ""
+
+    # Check if data has odometer values (from query_degradation_by_mileage)
+    has_odometer = any(
+        row.get("odometer") is not None and not (isinstance(row.get("odometer"), float) and np.isnan(row["odometer"]))
+        for row in data
+    )
+
+    if not has_odometer:
+        # Fall back to date-based chart
+        return _build_degradation_chart_date_based(data, rated_capacity_kwh)
+
+    pio.templates.default = "plotly_dark"
+    fig = go.Figure()
+
+    odometers = [float(row["odometer"]) for row in data]
+    capacities = [float(row["max_capacity"]) for row in data]
+
+    # Build hover text with date info
+    hover_texts = []
+    for row in data:
+        d = row.get("date")
+        d_str = d.strftime("%b %d, %Y") if hasattr(d, "strftime") else str(d)
+        odo = float(row["odometer"])
+        cap = float(row["max_capacity"])
+        hover_texts.append(
+            f"<b>{odo:,.0f} mi</b><br>"
+            f"Capacity: {cap:.1f} kWh<br>"
+            f"Date: {d_str}"
+        )
+
+    # Scatter points for recorded capacity
+    fig.add_trace(
+        go.Scatter(
+            x=odometers,
+            y=capacities,
+            mode="markers",
+            name="Recorded Capacity",
+            marker=dict(color="#47A8E5", size=6),
+            hovertext=hover_texts,
+            hoverinfo="text",
+        )
+    )
+
+    # Reference line at rated capacity
+    fig.add_hline(
+        y=rated_capacity_kwh,
+        line_dash="dash",
+        line_color="rgba(156, 163, 175, 0.5)",
+        annotation_text=f"Rated ({rated_capacity_kwh:.0f} kWh)",
+        annotation_position="top right",
+        annotation_font_color="#9ca3af",
+    )
+
+    # Trend line with forward projection
+    if len(data) >= 3:
+        odo_arr = np.array(odometers, dtype=float)
+        cap_arr = np.array(capacities, dtype=float)
+        coeffs = np.polyfit(odo_arr, cap_arr, 1)
+        slope, intercept = coeffs
+
+        # Trend over data range
+        trend_y = slope * odo_arr + intercept
+        fig.add_trace(
+            go.Scatter(
+                x=odometers,
+                y=trend_y.tolist(),
+                mode="lines",
+                name="Trend",
+                line=dict(color="#facc15", width=2, dash="dash"),
+                hoverinfo="skip",
+            )
+        )
+
+        # Project forward 5000 miles
+        last_odo = odo_arr[-1]
+        proj_odo = np.linspace(last_odo, last_odo + 5000, 50)
+        proj_y = slope * proj_odo + intercept
+        fig.add_trace(
+            go.Scatter(
+                x=proj_odo.tolist(),
+                y=proj_y.tolist(),
+                mode="lines",
+                name="Projection",
+                line=dict(color="#facc15", width=1.5, dash="dot"),
+                opacity=0.5,
+                hoverinfo="skip",
+            )
+        )
+
+    # Date annotations for every ~5th data point
+    min_cap = min(capacities) if capacities else 0
+    step = max(1, len(data) // 5)
+    for i in range(0, len(data), step):
+        d = data[i].get("date")
+        if d and hasattr(d, "strftime"):
+            fig.add_annotation(
+                x=odometers[i],
+                y=min_cap - (rated_capacity_kwh * 0.02),
+                text=d.strftime("%b %d"),
+                showarrow=False,
+                font=dict(size=9, color="#6b7280"),
+            )
+
+    fig.update_layout(
+        height=350,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e5e7eb",
+        margin=dict(l=20, r=20, t=20, b=30),
+        xaxis=dict(title="Odometer (miles)"),
+        yaxis=dict(title="Battery Capacity (kWh)"),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+        hoverlabel=_HOVER_LABEL,
+    )
+
+    return _wrap_chart(
+        fig.to_html(full_html=False, include_plotlyjs=False, config=_PLOTLY_CONFIG)
+    )
+
+
+def build_lv_battery_chart(data: list[dict]) -> str:
+    """Build 12v battery voltage-over-time line chart.
+
+    Returns HTML string. Empty string if no data.
+    """
+    if not data:
+        return ""
+
+    pio.templates.default = "plotly_dark"
+    fig = go.Figure()
+
+    timestamps = [row["recorded_at"] for row in data]
+    voltages = [row.get("voltage") for row in data]
+
+    # Build hover text with level info
+    hover_texts = []
+    for row in data:
+        ts = row["recorded_at"]
+        ts_str = ts.strftime("%b %d, %Y %H:%M") if hasattr(ts, "strftime") else str(ts)
+        parts = [f"<b>{ts_str}</b>"]
+        v = row.get("voltage")
+        if v is not None:
+            parts.append(f"Voltage: {v:.2f}V")
+        lvl = row.get("level")
+        if lvl is not None:
+            parts.append(f"Level: {lvl:.0f}%")
+        hover_texts.append("<br>".join(parts))
+
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=voltages,
+            mode="lines",
+            name="12V Voltage",
+            line=dict(color="#a78bfa", width=2),
+            hovertext=hover_texts,
+            hoverinfo="text",
+        )
+    )
+
+    fig.update_layout(
+        height=250,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#e5e7eb",
+        margin=dict(l=20, r=20, t=20, b=20),
+        yaxis=dict(title="Voltage (V)"),
+        showlegend=False,
+        hovermode="x unified",
+        hoverlabel=_HOVER_LABEL,
+    )
+
+    return _wrap_chart(
+        fig.to_html(full_html=False, include_plotlyjs=False, config=_PLOTLY_CONFIG)
+    )
+
+
+def build_mini_charge_curve(session, ref_curve: list[dict] | None = None) -> str:
+    """Build compact charge curve for session drawer (flipped: SOC on X, kW on Y).
 
     Returns HTML string. Empty string if no SOC data on session.
     """
@@ -910,27 +1117,46 @@ def build_mini_charge_curve(session) -> str:
     pio.templates.default = "plotly_dark"
     fig = go.Figure()
 
-    x = [0, 1]
-    y = [float(session.start_soc or 0), float(session.end_soc or 0)]
+    start_soc = float(session.start_soc or 0)
+    end_soc = float(session.end_soc or 0)
+    # Estimate kW as flat line from session data
+    est_kw = 0
+    if getattr(session, "charging_kw", None):
+        est_kw = abs(float(session.charging_kw))
+    elif getattr(session, "max_power", None):
+        est_kw = abs(float(session.max_power))
 
+    # Reference curve (thin gray dashed)
+    if ref_curve:
+        fig.add_trace(
+            go.Scatter(
+                x=[p["soc"] for p in ref_curve],
+                y=[p["kw"] for p in ref_curve],
+                mode="lines",
+                line=dict(color="#9ca3af", width=1, dash="dash"),
+                hoverinfo="skip",
+            )
+        )
+
+    # Session line (solid blue)
     fig.add_trace(
         go.Scatter(
-            x=x,
-            y=y,
+            x=[start_soc, end_soc],
+            y=[est_kw, est_kw],
             mode="lines+markers",
             line=dict(color="#47A8E5", width=2),
-            marker=dict(size=6),
+            marker=dict(size=4),
             hoverinfo="skip",
         )
     )
 
     fig.update_layout(
-        height=60,
+        height=80,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False, range=[0, 100]),
+        xaxis=dict(visible=False, range=[0, 100]),
+        yaxis=dict(visible=False),
         showlegend=False,
     )
 
