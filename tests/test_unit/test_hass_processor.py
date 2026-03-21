@@ -57,24 +57,51 @@ def test_wh_to_kwh_fractional():
 # ---------------------------------------------------------------------------
 
 
-def test_normalize_value_miles():
-    result = normalize_value(100, "mi", {"length": "mi"})
+def test_normalize_value_miles_imperial():
+    """FordPass reports miles -> convert to km."""
+    result = normalize_value(100, "mi", {"_fordpass_distance_unit": "mi"})
     assert result == pytest.approx(160.934, abs=0.001)
 
 
-def test_normalize_value_fahrenheit():
+def test_normalize_value_miles_metric_passthrough():
+    """FordPass reports km -> skip conversion, pass through."""
+    result = normalize_value(100, "mi", {"_fordpass_distance_unit": "km"})
+    assert result == 100.0
+
+
+def test_normalize_value_miles_default_fallback():
+    """No FordPass unit info -> default to imperial, convert."""
+    result = normalize_value(100, "mi", {})
+    assert result == pytest.approx(160.934, abs=0.001)
+
+
+def test_normalize_value_fahrenheit_imperial():
+    """FordPass reports degF -> convert to Celsius."""
+    result = normalize_value(212, "degF", {"_fordpass_temp_unit": "degF"})
+    assert result == pytest.approx(100.0, abs=0.01)
+
+
+def test_normalize_value_fahrenheit_metric_passthrough():
+    """FordPass reports degC -> skip conversion, pass through."""
+    result = normalize_value(100, "degF", {"_fordpass_temp_unit": "degC"})
+    assert result == 100.0
+
+
+def test_normalize_value_fahrenheit_default_fallback():
+    """No FordPass temp info -> default to imperial, convert."""
     result = normalize_value(212, "degF", {})
     assert result == pytest.approx(100.0, abs=0.01)
 
 
 def test_normalize_value_wh():
+    """Wh conversion unchanged by FordPass units."""
     result = normalize_value(5000, "Wh", {})
     assert result == pytest.approx(5.0, abs=0.001)
 
 
-def test_normalize_value_passthrough():
+def test_normalize_value_metric_passthrough():
     """Metric values pass through unchanged."""
-    result = normalize_value(42.0, "km", {})
+    result = normalize_value(42.0, "km", {"_fordpass_distance_unit": "km"})
     assert result == 42.0
 
 
