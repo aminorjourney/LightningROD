@@ -36,25 +36,40 @@ def wh_to_kwh(wh: float) -> float:
 
 
 def normalize_value(value, unit: str, ha_unit_system: dict) -> float:
-    """Normalize a value to metric for storage based on HA's detected units."""
+    """Normalize a value to metric for storage.
+
+    Uses FordPass preferred units (from elveh sensor) when available to decide
+    whether conversion is needed.  Falls back to assuming imperial if the
+    elveh sensor hasn't been seen yet.
+    """
     if value is None:
         return None
     try:
         value = float(value)
     except (TypeError, ValueError):
         return None
+
+    # FordPass preferred units (injected by hass_client from elveh sensor)
+    fp_distance = ha_unit_system.get("_fordpass_distance_unit", "mi")
+    fp_temp = ha_unit_system.get("_fordpass_temp_unit", "degF")
+
     if unit in ("mi", "mph") or (
         unit in ("distance", "length")
         and ha_unit_system.get("length") == "mi"
     ):
-        return miles_to_km(value)
+        # Only convert if FordPass is actually reporting in miles
+        return miles_to_km(value) if fp_distance == "mi" else value
+
     if unit in ("degF", "F") or (
         unit == "temperature"
         and ha_unit_system.get("temperature") in ("F", "\u00b0F")
     ):
-        return fahrenheit_to_celsius(value)
+        # Only convert if FordPass is actually reporting in Fahrenheit
+        return fahrenheit_to_celsius(value) if fp_temp in ("degF", "F") else value
+
     if unit == "Wh":
         return wh_to_kwh(value)
+
     return value  # already metric or unitless
 
 

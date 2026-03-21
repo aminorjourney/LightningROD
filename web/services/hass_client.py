@@ -192,6 +192,19 @@ class HASSClient:
             logger.info("Loaded %d entity states from HA", len(self._entity_states))
             self._detect_vin()
 
+            # Detect FordPass preferred units from elveh sensor attributes
+            if self._ha_config:
+                for eid, state in self._entity_states.items():
+                    if eid.startswith("sensor.fordpass_") and eid.endswith("_elveh"):
+                        uom = (state.get("attributes", {}).get("unit_of_measurement") or "").lower()
+                        self._ha_config["_fordpass_distance_unit"] = "mi" if "mi" in uom else "km"
+                        # Temperature unit: FordPass uses F when distance is mi, C when km
+                        self._ha_config["_fordpass_temp_unit"] = "degF" if "mi" in uom else "degC"
+                        logger.info("FordPass preferred units: distance=%s, temp=%s",
+                                    self._ha_config["_fordpass_distance_unit"],
+                                    self._ha_config["_fordpass_temp_unit"])
+                        break
+
         # Step 6: Process initial snapshot through event handler
         # This captures current state (e.g. last energytransferlogentry) as DB records
         if self._event_handler and self._entity_states:
