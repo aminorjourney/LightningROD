@@ -1378,6 +1378,46 @@ async def _ensure_vehicle_exists(device_id: str, entity_id: str, db) -> None:
     if not active_vid:
         await set_app_setting(db, "active_vehicle_id", str(vehicle.id))
         logger.info("Auto-activated vehicle %s (id=%d) -- no prior active vehicle", device_id, vehicle.id)
+        
+async def ensure_onstar2mqtt_vehicle_exists(
+    ha_entity_prefix: str,
+    db,
+) -> None:
+    """Auto-create an ev_vehicles row for a detected onstar2mqtt vehicle.
+
+    Uses ha_entity_prefix as device_id. Safe to call multiple times — no-ops
+    if the vehicle already exists.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from db.models.vehicle import EVVehicle
+    from web.queries.settings import get_app_setting, set_app_setting
+
+    result = await db.execute(
+        select(EVVehicle.id).where(EVVehicle.device_id == ha_entity_prefix).limit(1)
+    )
+    if result.scalar_one_or_none() is not None:
+        return  # Already exists
+
+    vehicle = EVVehicle(
+        display_name=ha_entity_prefix,
+        device_id=ha_entity_prefix,
+        source_system="ha_onstar2mqtt",
+        ha_entity_prefix=ha_entity_prefix,
+    )
+    db.add(vehicle)
+    try:
+        await db.flush()
+        logger.info("Auto-created onstar2mqtt vehicle: prefix=%s", ha_entity_prefix)
+        # Auto-activate if no active vehicle set
+        active_vid = await get_app_setting(db, "active_vehicle_id", "")
+        if not active_vid:
+            await set_app_setting(db, "active_vehicle_id", str(vehicle.id))
+    except IntegrityError:
+        await db.rollback()
+        logger.debug("onstar2mqtt vehicle already exists for prefix=%s", ha_entity_prefix)
+
 
 # Helper: define _get_onstar2mqtt_vehicles() function
 

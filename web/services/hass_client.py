@@ -189,6 +189,7 @@ class HASSClient:
             self._entity_states = {s["entity_id"]: s for s in states}
             logger.info("Loaded %d entity states from HA", len(self._entity_states))
             self._detect_vin()
+            await self._detect_and_register_onstar2mqtt_vehicles()
 
             # The elveh/outsidetemp startup probe that used to stash FordPass
             # preferred distance + temperature units on ha_config has been
@@ -305,6 +306,34 @@ class HASSClient:
                 logger.info("Auto-detected VIN from entity: %s", entity_id)
                 return
         logger.debug("No FordPass entities found for VIN detection")
+        
+    async def _detect_and_register_onstar2mqtt_vehicles(self) -> None:
+        """Scan entity states for onstar2mqtt vehicles
+        
+        Identifies onstar2mqtt vehicles by looking for sensor.*_ev_range entities.
+        Strips the suffix to get the ha_entity_prefix, then auto-creates an
+        ev_vehicles row if one doesn't already exist.
+        """
+        
+        from db.engine import AsyncSessionLocal
+        from web.services.hass_processor import ensure_onstar2mqtt_vehicle_exists
+
+        _MARKER = "_ev_range"
+        found = []
+        for entity_id in self._entity_states:
+            if entity_id.startswith("sensor.") and entity_id.endswith(_MARKER):
+                prefix = entity_id[len("sensor."):-len(_MARKER)]
+                found.append(prefix)
+                logger.info("Detected onstar2mqtt vehicle prefix: %s", prefix)
+
+        if not found:
+            logger.debug("No onstar2mqtt vehicles detected in HA entity states")
+            return
+
+        async with AsyncSessionLocal() as db:
+            for prefix in found:
+                await ensure_onstar2mqtt_vehicle_exists(prefix, db)
+            await db.commit()
 
     async def _send_json(self, data: dict) -> None:
         """Send a JSON message over the websocket."""

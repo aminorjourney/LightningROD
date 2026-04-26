@@ -12,11 +12,11 @@ Adds:
       is null (VIN auto-detection continues to work as before).
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "s35_onstar2mqtt_prefix"
-down_revision = "s34_phase29_ingest_schema_version"
+down_revision = "s34_phase29_schema_version"
 branch_labels = None
 depends_on = None
 
