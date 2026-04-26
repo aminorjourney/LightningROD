@@ -453,7 +453,6 @@ async def _handle_odometer(
         source_system="ha_onstar2mqtt",
         odometer=odometer,
         original_timestamp=recorded_at,
-        ingest_schema_version=INGEST_SCHEMA_VERSION,
     )
     db.add(record)
     logger.debug("ha_onstar2mqtt: odometer=%s km for %s", odometer, device_id)
