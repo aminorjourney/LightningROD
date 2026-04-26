@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from web.services.sources.ha_fordpass import adapter as ha_fordpass
+from web.services.sources.ha_onstar2mqtt import adapter as ha_onstar2mqtt
 from web.services.units import detection
 from web.services.units.to_metric import UnknownSourceUnit, to_metric
 
@@ -1378,6 +1379,36 @@ async def _ensure_vehicle_exists(device_id: str, entity_id: str, db) -> None:
         await set_app_setting(db, "active_vehicle_id", str(vehicle.id))
         logger.info("Auto-activated vehicle %s (id=%d) -- no prior active vehicle", device_id, vehicle.id)
 
+# Helper: define _get_onstar2mqtt_vehicles() function
+
+async def _get_onstar2mqtt_vehicles(db) -> list[dict]:
+    """Load all onstar2mqtt vehicles from ev_vehicles.
+ 
+    Returns a list of dicts with keys: device_id, ha_entity_prefix.
+    Cached in-process for 60s to avoid a DB query on every event.
+    """
+    import time
+    from sqlalchemy import text
+ 
+    now = time.monotonic()
+    cache = _get_onstar2mqtt_vehicles._cache
+    if cache and now - cache["ts"] < 60:
+        return cache["vehicles"]
+ 
+    rows = await db.execute(
+        text(
+            "SELECT device_id, ha_entity_prefix FROM ev_vehicles "
+            "WHERE source_system = 'ha_onstar2mqtt' "
+            "AND ha_entity_prefix IS NOT NULL"
+        )
+    )
+    vehicles = [{"device_id": r[0], "ha_entity_prefix": r[1]} for r in rows]
+    _get_onstar2mqtt_vehicles._cache = {"ts": now, "vehicles": vehicles}
+    return vehicles
+ 
+_get_onstar2mqtt_vehicles._cache = {}
+
+
 
 async def process_state_change(
     entity_id: str, old_state: dict, new_state: dict, ha_config: dict
@@ -1404,7 +1435,34 @@ async def process_state_change(
         except Exception as e:
             await db.rollback()
             logger.error("Error checking gas sensor for %s: %s", entity_id, e, exc_info=True)
-
+            
+    # -- onstar2mqtt handler dispatch
+            
+    async with AsyncSessionLocal() as db:
+        try:
+            vehicles = await _get_onstar2mqtt_vehicles(db)
+            for vehicle in vehicles:
+                prefix = vehicle["ha_entity_prefix"]
+                device_id = vehicle["device_id"]
+                # Match sensor.*, binary_sensor.*, device_tracker.*
+                for domain in ("sensor.", "binary_sensor.", "device_tracker."):
+                    if entity_id.startswith(f"{domain}{prefix}_"):
+                        await ha_onstar2mqtt.process_event(
+                            entity_id,
+                            new_state,
+                            db,
+                            ha_entity_prefix=prefix,
+                            device_id=device_id,
+                            ha_config=ha_config,
+                        )
+                        await db.commit()
+                        return  # Fully handled by onstar2mqtt adapter
+        except Exception as e:
+            await db.rollback()
+            logger.error(
+                "Error in onstar2mqtt handler for %s: %s", entity_id, e, exc_info=True
+            )
+ 
     # --- Slug-based FordPass handler dispatch ---
     slug = extract_slug(entity_id)
     if slug is None or slug not in SENSOR_HANDLERS:

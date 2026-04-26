@@ -38,6 +38,7 @@ class EVVehicle(Base):
     vin: Mapped[str | None] = mapped_column(String, unique=True)
     device_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     source_system: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ha_entity_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # ICE comparison fields — configure what gas vehicle this EV replaces.
     # Stored metric: efficiency in L/100km, tank capacity in liters.
