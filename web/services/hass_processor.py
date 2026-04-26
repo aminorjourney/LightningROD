@@ -611,20 +611,7 @@ async def handle_battery_status(slug, new_state, ha_config, device_id, db):
             pending["motor_amperage"] = motor_amperage
         if motor_kw is not None:
             pending["motor_kw"] = motor_kw
-        # Max range from attributes — unit-bearing, resolved via HA signals.
-        max_range = _safe_float(attrs.get("maximumBatteryRange"))
-        if max_range is not None:
-            converted = _resolve_and_convert(
-                raw_value=max_range,
-                entity_id=entity_id,
-                attribute="maximumBatteryRange",
-                new_state=new_state,
-                ha_config=ha_config,
-                field_type="distance",
-                device_id=device_id,
-            )
-            if converted is not None:
-                pending["hv_battery_max_range"] = converted
+
 
         # --- Trip attributes from elveh entity (legacy fallback) ---
         # Distance + temperature converters resolve per-attribute via the
