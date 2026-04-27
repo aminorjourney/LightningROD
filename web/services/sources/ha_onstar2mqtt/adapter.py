@@ -372,6 +372,8 @@ async def _handle_charge_state(
 ) -> None:
     """sensor.*_charge_state -> ev_battery_status.hv_battery_soc (%)."""
     from db.models.battery_status import EVBatteryStatus
+    from db.models.vehicle import EVVehicle
+    from sqlalchemy import select
 
     raw = new_state.get("state")
     soc = _safe_float(raw)
@@ -379,6 +381,15 @@ async def _handle_charge_state(
         return
 
     _record_last_seen(f"{entity_id}|state", raw, soc, "%")
+
+    # Pull gross capacity from ev_vehicles to populate hv_battery_capacity
+    result = await db.execute(
+        select(EVVehicle.battery_gross_capacity_kwh)
+        .where(EVVehicle.device_id == device_id)
+        .limit(1)
+    )
+    row = result.first()
+    gross_capacity = float(row[0]) if row and row[0] else None
 
     # Cache for session boundary detection
     _last_soc[device_id] = soc
@@ -389,12 +400,12 @@ async def _handle_charge_state(
         recorded_at=recorded_at,
         source_system="ha_onstar2mqtt",
         hv_battery_soc=soc,
+        hv_battery_capacity=gross_capacity,
         original_timestamp=recorded_at,
         ingest_schema_version=INGEST_SCHEMA_VERSION,
     )
     db.add(record)
-    logger.debug("ha_onstar2mqtt: charge_state=%s%% for %s", soc, device_id)
-
+    logger.debug("ha_onstar2mqtt: charge_state=%s%% capacity=%s for %s", soc, gross_capacity, device_id)
 
 async def _handle_battery_temp(
     entity_id: str,
