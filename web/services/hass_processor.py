@@ -611,7 +611,13 @@ async def handle_battery_status(slug, new_state, ha_config, device_id, db):
             pending["motor_amperage"] = motor_amperage
         if motor_kw is not None:
             pending["motor_kw"] = motor_kw
-
+            
+        # maximumBatteryRange is always km regardless of HA unit system —
+        # store directly without conversion. The detection layer incorrectly
+        # treats this as miles on imperial HA installations, so we bypass it.
+        max_range = _safe_float(attrs.get("maximumBatteryRange"))
+        if max_range is not None:
+            pending["hv_battery_max_range"] = max_range
 
         # --- Trip attributes from elveh entity (legacy fallback) ---
         # Distance + temperature converters resolve per-attribute via the
